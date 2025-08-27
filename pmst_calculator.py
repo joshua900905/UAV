@@ -29,14 +29,12 @@ class PMSTCalculator:
         self.mst_graph.clear()
         self.voronoi_vertices = []
         
-        # 1. 根據模式獲取用於計算 MST 的節點集 (P_MST)
         input_nodes = self._get_input_nodes_for_mode(mode, drones, env_rect)
 
         if len(input_nodes) < 2:
             print(f"模式 '{mode}' 的節點不足 ({len(input_nodes)}個)，無法形成圖。")
             return self.mst_graph, self.voronoi_vertices
 
-        # 2. 根據節點集計算 MST
         self._compute_mst_from_nodes(input_nodes)
         
         return self.mst_graph, self.voronoi_vertices
@@ -55,18 +53,17 @@ class PMSTCalculator:
         
         elif mode == 'search_voronoi':
             base_nodes = gcs + t1_search
-            return self._calculate_voronoi_vertices(base_nodes, drones, env_rect)
+            return self._calculate_voronoi_union(base_nodes, env_rect)
         
         elif mode == 'busy_voronoi':
             base_nodes = gcs + t1_search + t_relay
-            return self._calculate_voronoi_vertices(base_nodes, drones, env_rect)
+            return self._calculate_voronoi_union(base_nodes, env_rect)
             
         return []
 
-    def _calculate_voronoi_vertices(self, points, drones, env_rect): # <--- 修正點：增加了 drones 參數
+    def _calculate_voronoi_union(self, points, env_rect):
         """
-        計算 Voronoi 圖並返回其在環境邊界內的頂點。
-        這些頂點將成為 P_MST 的一部分。
+        計算 Voronoi 圖，並返回 原始點 和 Voronoi頂點 的並集。
         """
         if len(points) < 4:
             print("Voronoi 圖需要至少4個點，將直接使用原始點。")
@@ -78,22 +75,18 @@ class PMSTCalculator:
             valid_vertices = [tuple(v) for v in vor.vertices if env_rect.collidepoint(v)]
             self.voronoi_vertices = valid_vertices
             
-            # --- 修正點：更穩健地找到並加入 GCS ---
-            gcs_drone = next((d for d in drones if "GCS" in d.spec['name']), None)
-            result_nodes = list(valid_vertices)
+            # --- 核心修正點 ---
+            # 將原始點 (GCS, Search UAVs 等) 與有效的 Voronoi 顶点合并
+            # 使用 set 来自动处理重复项
+            combined_points = set(points)
+            combined_points.update(valid_vertices)
             
-            if gcs_drone:
-                gcs_pos = (gcs_drone.x, gcs_drone.y)
-                # 確保 GCS 節點只被加入一次
-                if gcs_pos not in result_nodes:
-                    result_nodes.insert(0, gcs_pos)
-
-            return result_nodes
+            return list(combined_points)
 
         except QhullError as e:
             print(f"計算 Voronoi 圖時發生錯誤: {e}. 可能因輸入點共線。")
             self.voronoi_vertices = []
-            return points
+            return points # 出错时返回原始点
 
     def _compute_mst_from_nodes(self, nodes):
         """從節點位置列表中計算最小生成樹"""

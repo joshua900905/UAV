@@ -10,8 +10,8 @@ CONFIG = {
 
     # 環境設定
     "environment": {
-        "width": 500,
-        "height": 500,
+        "width": 1000,
+        "height": 1000,
         "border_color": (200, 200, 200)
     },
 
