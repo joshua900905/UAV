@@ -4,6 +4,8 @@ import pygame
 import math
 from config import CONFIG
 
+# ... (draw_dashed_circle, draw_dashed_lines, draw_environment, draw_edges, draw_palette 不變) ...
+
 def draw_dashed_circle(surface, color, center, radius, width=1, dash_length=10, gap_length=5):
     if radius <= 0: return
     circumference = 2 * math.pi * radius
@@ -15,8 +17,7 @@ def draw_dashed_circle(surface, color, center, radius, width=1, dash_length=10, 
     dash_angle = (dash_length / circumference) * 2 * math.pi
     rect = pygame.Rect(center[0] - radius, center[1] - radius, radius * 2, radius * 2)
     for i in range(num_segments):
-        start_angle = i * segment_angle
-        end_angle = start_angle + dash_angle
+        start_angle, end_angle = i * segment_angle, i * segment_angle + dash_angle
         pygame.draw.arc(surface, color, rect, -end_angle, -start_angle, width)
 
 def draw_dashed_lines(surface, color, points, width=1, dash_length=10, gap_length=5):
@@ -25,18 +26,14 @@ def draw_dashed_lines(surface, color, points, width=1, dash_length=10, gap_lengt
         segment_vector = end_pos - start_pos
         segment_length = segment_vector.length()
         if segment_length == 0: continue
-        
         direction_vector = segment_vector.normalize()
-        current_pos, distance_covered = start_pos, 0
-        
-        while distance_covered < segment_length:
+        current_pos, dist_covered = start_pos, 0
+        while dist_covered < segment_length:
             dash_end = current_pos + direction_vector * dash_length
-            if (dash_end - start_pos).length() > segment_length:
-                dash_end = end_pos
+            if (dash_end - start_pos).length() > segment_length: dash_end = end_pos
             pygame.draw.line(surface, color, current_pos, dash_end, width)
-            
             gap_start = dash_end + direction_vector * gap_length
-            distance_covered = (gap_start - start_pos).length()
+            dist_covered = (gap_start - start_pos).length()
             current_pos = gap_start
 
 def draw_environment(screen, env_rect):
@@ -56,20 +53,20 @@ def draw_palette(screen, font, palette_items, placing_drone_type, screen_width, 
     palette_rect = pygame.Rect(base_x, 0, conf['width'], screen_height)
     pygame.draw.rect(screen, conf['bg_color'], palette_rect)
     for item in palette_items:
-        item_rect_dynamic = pygame.Rect(base_x, item['rect'].y, conf['width'], conf['item_height'])
-        pygame.draw.rect(screen, conf['bg_color'], item_rect_dynamic)
+        item_rect_dyn = pygame.Rect(base_x, item['rect'].y, conf['width'], conf['item_height'])
+        pygame.draw.rect(screen, conf['bg_color'], item_rect_dyn)
         if item['type_id'] == placing_drone_type:
-            pygame.draw.rect(screen, conf['highlight_color'], item_rect_dynamic, 3)
+            pygame.draw.rect(screen, conf['highlight_color'], item_rect_dyn, 3)
         item['drone'].x = base_x + 30
         item['drone'].draw(screen, show_range=False, is_template=True)
         name_surface = font.render(item['drone'].spec['name'], True, conf['font_color'])
-        screen.blit(name_surface, (item_rect_dynamic.x + 50, item_rect_dynamic.y + 15))
+        screen.blit(name_surface, (item_rect_dyn.x + 50, item_rect_dyn.y + 15))
         if item['drone'].comm_radius > 0:
             comm_text = f"Radius: {item['drone'].comm_radius}"
             comm_surface = font.render(comm_text, True, conf['font_color'])
-            screen.blit(comm_surface, (item_rect_dynamic.x + 50, item_rect_dynamic.y + 40))
+            screen.blit(comm_surface, (item_rect_dyn.x + 50, item_rect_dyn.y + 40))
 
-def draw_hud(screen, font, path_drawing_on, path_sub_mode):
+def draw_hud(screen, font, path_drawing_on, path_sub_mode, pmst_mode): # 更新參數
     path_status = f"ON ({path_sub_mode.upper()})" if path_drawing_on else "OFF"
     hud_texts = [
         "Controls:",
@@ -81,16 +78,19 @@ def draw_hud(screen, font, path_drawing_on, path_sub_mode):
         "  'D' (hover): Delete object",
         "  'E' (hover on edge): Lock/Unlock highlight",
         "  'W': Clear all pairing exemptions",
-        "  'S' (hover on edge): Delete specific edge",
-        "  'S' (no hover): Restore all deleted edges",
+        "  'S': Delete/Restore Edges",
         "  'A': Reset simulation",
         "  'ENTER': Toggle this HUD",
         "  'ESC': Quit",
         "",
+        "PMST Generation:",
+        f"  Mode: {pmst_mode.upper()}",
+        "  'TAB': Switch Mode",
+        "  'G': Generate/Calculate PMST",
+        "",
         "Pairing (No Connection):",
         "  1. Right-Click a 't=t' drone",
-        "  2. Right-Click a 't=t+1' drone",
-        "  (Paired drones are marked by a number)"
+        "  2. Right-Click a 't=t+1' drone"
     ]
     text_color, start_x, start_y, line_spacing = (0, 0, 0), 15, 15, 25
     for i, text in enumerate(hud_texts):
@@ -116,3 +116,14 @@ def draw_paths(screen, paths):
                 draw_dashed_lines(screen, path.color, path.points, width=2)
             else:
                 pygame.draw.lines(screen, path.color, False, path.points, 2)
+
+# --- 新增 PMST 繪圖函式 ---
+def draw_pmst(screen, pmst_graph, voronoi_vertices):
+    conf = CONFIG['pmst_settings']
+    # 繪製 Voronoi 頂點 (如果有的話)
+    for vertex in voronoi_vertices:
+        pygame.draw.circle(screen, conf['voronoi_vertex_color'], vertex, conf['voronoi_vertex_radius'])
+
+    # 繪製 MST 的邊
+    for u, v in pmst_graph.edges():
+        pygame.draw.line(screen, conf['mst_edge_color'], u, v, conf['mst_edge_thickness'])

@@ -1,7 +1,7 @@
 # renderer.py
 
 import pygame
-from drawing import draw_environment, draw_edges, draw_palette, draw_hud, draw_grid, draw_paths
+from drawing import draw_environment, draw_edges, draw_palette, draw_hud, draw_grid, draw_paths, draw_pmst
 from entities import Drone
 from config import CONFIG
 
@@ -19,6 +19,9 @@ class Renderer:
         draw_environment(self.screen, app.env_rect)
         draw_edges(self.screen, app.simulation.drones, app.simulation.graph, app.hovered_edge, app.simulation.locked_highlight_edges)
         
+        # --- 繪製 PMST ---
+        draw_pmst(self.screen, app.simulation.pmst_graph, app.simulation.voronoi_vertices)
+
         for drone in app.simulation.drones:
             drone.draw(self.screen, app.show_comm_range)
         
@@ -38,11 +41,13 @@ class Renderer:
         draw_palette(self.screen, self.font, app.palette_items, app.placing_drone_type, app.screen_width, app.screen_height)
         
         if app.placing_drone_type is not None:
-            preview_drone = Drone(-1, pygame.mouse.get_pos()[0], pygame.mouse.get_pos()[1], app.placing_drone_type)
+            pos = pygame.mouse.get_pos()
+            preview_drone = Drone(-1, pos[0], pos[1], app.placing_drone_type)
             preview_drone.draw(self.screen, show_range=False, is_template=True, alpha=150)
         
         if app.show_hud:
-            draw_hud(self.screen, self.font, app.path_drawing_mode_on, app.path_drawing_sub_mode)
+            # 傳遞當前 PMST 模式給 HUD
+            draw_hud(self.screen, self.font, app.path_drawing_mode_on, app.path_drawing_sub_mode, app.simulation.pmst_mode)
         
         pygame.display.flip()
 
