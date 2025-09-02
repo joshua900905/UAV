@@ -1,7 +1,8 @@
 # renderer.py
 
 import pygame
-from drawing import draw_environment, draw_edges, draw_palette, draw_hud, draw_grid, draw_paths, draw_pmst
+from drawing import (draw_environment, draw_edges, draw_palette, draw_hud, 
+                     draw_grid, draw_paths, draw_pmst, draw_dashed_circle)
 from entities import Drone
 from config import CONFIG
 
@@ -19,11 +20,16 @@ class Renderer:
         draw_environment(self.screen, app.env_rect)
         draw_edges(self.screen, app.simulation.drones, app.simulation.graph, app.hovered_edge, app.simulation.locked_highlight_edges)
         
-        # --- 繪製 PMST ---
-        draw_pmst(self.screen, app.simulation.pmst_graph, app.simulation.voronoi_vertices)
+        if not app.simulation.live_simulation_active:
+            draw_pmst(self.screen, app.simulation.pmst_graph, app.simulation.voronoi_vertices)
 
         for drone in app.simulation.drones:
-            drone.draw(self.screen, app.show_comm_range)
+            drone.draw(self.screen)
+            if app.show_comm_range and drone.comm_radius > 0:
+                style = CONFIG['comm_range_style']
+                draw_dashed_circle(self.screen, style['color'], (drone.x, drone.y), drone.comm_radius,
+                                   width=style['thickness'], dash_length=style['dash_length'], 
+                                   gap_length=style['gap_length'])
         
         self._draw_pairing_labels(app)
 
@@ -43,11 +49,12 @@ class Renderer:
         if app.placing_drone_type is not None:
             pos = pygame.mouse.get_pos()
             preview_drone = Drone(-1, pos[0], pos[1], app.placing_drone_type)
-            preview_drone.draw(self.screen, show_range=False, is_template=True, alpha=150)
+            preview_drone.draw(self.screen, is_template=True, alpha=150)
         
         if app.show_hud:
-            # 傳遞當前 PMST 模式給 HUD
-            draw_hud(self.screen, self.font, app.path_drawing_mode_on, app.path_drawing_sub_mode, app.simulation.pmst_mode)
+            timestep_info = {"current": app.simulation.current_timestep, "max": app.simulation.max_timesteps}
+            draw_hud(self.screen, self.font, app.path_drawing_mode_on, app.path_drawing_sub_mode, 
+                     app.simulation.pmst_mode, app.simulation.live_simulation_active, timestep_info)
         
         pygame.display.flip()
 
