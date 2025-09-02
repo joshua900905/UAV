@@ -13,6 +13,7 @@ class PathGenerator:
         all_paths = []
         strip_width = env_rect.width / num_drones
         color_palette = CONFIG['path_color_palette']
+
         for i in range(num_drones):
             path_color = color_palette[i % len(color_palette)]
             drone_path = Path(color=path_color, style='solid')

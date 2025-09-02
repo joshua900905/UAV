@@ -3,19 +3,19 @@
 import pygame
 
 CONFIG = {
-    # 螢幕設定
+    # 萤幕设定
     "screen_width": 1000,
     "screen_height": 800,
     "background_color": (255, 255, 255),
 
-    # 環境設定
+    # 环境设定
     "environment": {
         "width": 500,
         "height": 500,
         "border_color": (200, 200, 200)
     },
 
-    # 網格系統設定
+    # 网格系统设定
     "grid_system": {
         "cell_size": 50,
         "line_color": (220, 220, 220),
@@ -23,7 +23,7 @@ CONFIG = {
         "toggle_key": pygame.K_c
     },
 
-    # 右側選單面板設定
+    # 右侧选单面板设定
     "palette": {
         "width": 200,
         "bg_color": (240, 240, 240),
@@ -32,15 +32,15 @@ CONFIG = {
         "highlight_color": (0, 150, 255)
     },
 
-    # 無人機通用視覺設定
+    # 无人机通用视觉设定
     "drone_visual_radius": 12,
 
-    # 通訊連結線 (邊) 的設定
+    # 通讯连结线 (边) 的设定
     "edge_color": (100, 100, 100),
     "edge_thickness": 2,
     "edge_highlight_color": (255, 69, 0),
 
-    # 通訊範圍虛線圓圈的設定
+    # 通讯范围虚线圆圈的设定
     "comm_range_style": {
         "show_on_start": True,
         "color": (0, 0, 0),
@@ -50,13 +50,13 @@ CONFIG = {
         "toggle_key": pygame.K_r
     },
 
-    # 路徑顏色調色盤
+    # 路径颜色调色盘
     "path_color_palette": [
         (255, 0, 0), (0, 0, 255), (0, 255, 0), (255, 165, 0),
         (75, 0, 130), (238, 130, 238), (0, 255, 255),
     ],
     
-    # PMST 計算與視覺化設定
+    # PMST 计算与视觉化设定
     "pmst_settings": {
         "mst_edge_color": (0, 200, 200),
         "mst_edge_thickness": 3,
@@ -64,7 +64,7 @@ CONFIG = {
         "voronoi_vertex_radius": 5
     },
     
-    # 覆蓋路徑生成設定
+    # 覆盖路径生成设定
     "coverage_path_settings": {
         "num_search_drones": 3,
         "sweep_width_factor": 1.0,
@@ -75,7 +75,18 @@ CONFIG = {
         "max_timesteps": 400
     },
 
-    # 快捷鍵設定
+    # 侦错绘图设定
+    "debug_drawing": {
+        "steiner_point_color": (255, 0, 255),      # 洋红色
+        "steiner_point_radius": 5,
+        "opt_point_color": (0, 255, 255),          # 青色
+        "opt_point_radius": 7,
+        "assignment_line_color_init": (255, 165, 0), # 橘色
+        "assignment_line_color_opt": (50, 205, 50),  # 莱姆绿
+        "assignment_line_thickness": 1,
+    },
+
+    # 快捷键设定
     "hotkeys": {
         "delete_key": pygame.K_d,
         "toggle_edge_highlight_key": pygame.K_e,
@@ -89,15 +100,18 @@ CONFIG = {
         "switch_pmst_mode_key": pygame.K_TAB,
         "generate_pmst_key": pygame.K_g,
         "setup_coverage_scene_key": pygame.K_b,
-        "toggle_live_simulation_key": pygame.K_l
+        "toggle_live_simulation_key": pygame.K_l,
+        "debug_step_key": pygame.K_F5,
+        "save_debug_frames_key": pygame.K_F6,
+        "deploy_relays_key": pygame.K_F7
     },
 
-    # 高亮顏色
+    # 高亮颜色
     "hover_highlight_color": (255, 0, 0),
     "pairing_selection_color": (0, 191, 255),
     "pairing_label_color": (238, 130, 238),
     
-    # 每種無人機的詳細設定
+    # 每种无人机的详细设定
     "drone_types": [
         {
             "name": "t = t Search", "shape": "circle", "color": (0, 100, 0), 
@@ -113,7 +127,7 @@ CONFIG = {
         },
         {
             "name": "t = t+1 Relay", "shape": "square", "color": (255, 255, 0),
-            "comm_radius": 80, "quantity_initial": 40, "speed": 8
+            "comm_radius": 80, "quantity_initial": 40, "speed": 8 # 数量由 F7 控制
         },
         {
             "name": "GCS", "shape": "triangle", "color": (160, 32, 240),
@@ -126,12 +140,10 @@ CONFIG = {
     ]
 }
 
-# --- 動態後處理 CONFIG ---
+# --- 动态后处理 CONFIG ---
 def lighten_color(color, factor=0.6):
     r, g, b = color
-    r_light = int(r + (255 - r) * factor)
-    g_light = int(g + (255 - g) * factor)
-    b_light = int(b + (255 - b) * factor)
+    r_light = int(r + (255 - r) * factor); g_light = int(g + (255 - g) * factor); b_light = int(b + (255 - b) * factor)
     return (r_light, g_light, b_light)
 
 base_colors = {}
@@ -139,7 +151,6 @@ for drone_type in CONFIG['drone_types']:
     if drone_type['name'].startswith("t = t "):
         key = drone_type['name'].replace("t = t ", "")
         base_colors[key] = drone_type['color']
-
 for drone_type in CONFIG['drone_types']:
     if drone_type['name'].startswith("t = t+1 "):
         key = drone_type['name'].replace("t = t+1 ", "")

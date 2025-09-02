@@ -56,7 +56,8 @@ class Drone:
         while remaining_steps > 0 and temp_target_idx < len(self.path.points):
             target_pos = pygame.Vector2(self.path.points[temp_target_idx])
             dist_to_target = future_pos.distance_to(target_pos)
-            steps_to_reach = dist_to_target / self.speed
+            steps_to_reach = dist_to_target / self.speed if self.speed > 0 else float('inf')
+            
             if steps_to_reach <= remaining_steps:
                 future_pos = target_pos
                 remaining_steps -= steps_to_reach

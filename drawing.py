@@ -50,8 +50,6 @@ def draw_edges(screen, drones, graph, hovered_edge, locked_edges):
 def draw_palette(screen, font, palette_items, placing_drone_type, screen_width, screen_height):
     conf = CONFIG['palette']
     base_x = screen_width - conf['width']
-    palette_rect = pygame.Rect(base_x, 0, conf['width'], screen_height)
-    pygame.draw.rect(screen, conf['bg_color'], palette_rect)
     for item in palette_items:
         item_rect_dyn = pygame.Rect(base_x, item['rect'].y, conf['width'], conf['item_height'])
         if item['type_id'] == placing_drone_type:
@@ -65,20 +63,24 @@ def draw_palette(screen, font, palette_items, placing_drone_type, screen_width, 
             screen.blit(comm_surface, (item_rect_dyn.x + 50, item_rect_dyn.y + 40))
 
 def draw_hud(screen, font, path_drawing_on, path_sub_mode, pmst_mode, is_live, timestep_info):
-    path_status = f"ON ({path_sub_mode.upper()})" if path_drawing_on else "OFF"
     live_status = "ON" if is_live else "OFF"
     time_text = f"Time: {timestep_info['current']}/{timestep_info['max']}"
     hud_texts = [
-        time_text, "", "Controls:",
-        f"  'P': Manual Path Drawing ({path_status})",
-        "  'B': Build & Start Coverage Scene",
-        f"  'L': Toggle Live Simulation ({live_status})",
-        "  'O': Clear All Paths", "  'R': Toggle communication range", "  'C': Toggle grid",
-        "  'D' (hover): Delete object", "  'S': Delete/Restore Edges", "  'A': Reset simulation",
-        "  'ENTER': Toggle this HUD", "  'ESC': Quit", "",
-        "Sandbox PMST Generation:", f"  Mode: {pmst_mode.upper()}",
-        "  'TAB': Switch Mode", "  'G': Generate/Calculate PMST", "",
-        "Pairing:", "  Right-Click 't=t' then 't=t+1' drone"
+        time_text, "",
+        "--- Controls ---",
+        "B: Build & Start Mission",
+        f"L: Toggle Live Sim ({live_status})",
+        "A: Reset", "ENTER: Toggle HUD", "ESC: Quit",
+        "",
+        "--- Sandbox Mode ---",
+        "P: Manual Path Drawing",
+        "F5: Run Debug Step", "F6: Save Debug Frames", "F7: Deploy Relays",
+        "",
+        "--- Debug Legend (F6 Images) ---",
+        "🟣 Magenta Dot: Ideal Steiner Point",
+        "🔵 Cyan Dot:    Final Deploy Point (P_opt)",
+        "🟠 Orange Line: Initial Assignment",
+        "1,2..: Final Assignment (Drone <-> Point)",
     ]
     text_color, start_x, start_y, line_spacing = (0,0,0), 15, 15, 25
     for i, text in enumerate(hud_texts):
@@ -88,7 +90,7 @@ def draw_grid(screen, env_rect, highlighted_cells):
     conf = CONFIG['grid_system']
     cell_size = conf['cell_size']
     for col, row in highlighted_cells:
-        pygame.draw.rect(screen, conf['highlight_color'], (env_rect.left + col * cell_size, env_rect.top + row * cell_size, cell_size, cell_size))
+        pygame.draw.rect(screen, conf['highlight_color'], (env_rect.left+col*cell_size, env_rect.top+row*cell_size, cell_size, cell_size))
     for x in range(env_rect.left, env_rect.right, cell_size):
         pygame.draw.line(screen, conf['line_color'], (x, env_rect.top), (x, env_rect.bottom))
     for y in range(env_rect.top, env_rect.bottom, cell_size):
@@ -97,10 +99,8 @@ def draw_grid(screen, env_rect, highlighted_cells):
 def draw_paths(screen, paths):
     for path in paths:
         if len(path.points) > 1:
-            if path.style == 'dashed':
-                draw_dashed_lines(screen, path.color, path.points, width=2)
-            else:
-                pygame.draw.lines(screen, path.color, False, path.points, 2)
+            if path.style == 'dashed': draw_dashed_lines(screen, path.color, path.points, width=2)
+            else: pygame.draw.lines(screen, path.color, False, path.points, 2)
 
 def draw_pmst(screen, pmst_graph, voronoi_vertices):
     conf = CONFIG['pmst_settings']
@@ -108,3 +108,33 @@ def draw_pmst(screen, pmst_graph, voronoi_vertices):
         pygame.draw.circle(screen, conf['voronoi_vertex_color'], vertex, conf['voronoi_vertex_radius'])
     for u, v in pmst_graph.edges():
         pygame.draw.line(screen, conf['mst_edge_color'], u, v, conf['mst_edge_thickness'])
+
+def draw_debug_info(screen, font, debug_data, stage):
+    conf = CONFIG['debug_drawing']
+    
+    if stage >= 1:
+        if 'steiner_mst' in debug_data:
+            for p1, p2 in debug_data['steiner_mst']: pygame.draw.line(screen, (200, 200, 200), p1, p2, 1)
+        if 'steiner_points' in debug_data:
+            for point in debug_data['steiner_points']: pygame.draw.circle(screen, conf['steiner_point_color'], point, conf['steiner_point_radius'], 1)
+    if stage >= 2:
+        if 'init_assignments' in debug_data:
+            for drone, end_pos in debug_data['init_assignments'].items():
+                start_pos = (drone.x, drone.y)
+                if pygame.Vector2(start_pos).distance_to(end_pos) > 1:
+                    pygame.draw.line(screen, conf['assignment_line_color_init'], start_pos, end_pos, conf['assignment_line_thickness'])
+                    pygame.draw.circle(screen, conf['assignment_line_color_init'], end_pos, 3)
+    if stage >= 3:
+        if 'opt_points' in debug_data:
+            for point in debug_data['opt_points']:
+                pygame.draw.circle(screen, conf['opt_point_color'], point, conf['opt_point_radius'])
+    if stage == 4:
+        if 'final_assignments_pairs' in debug_data:
+            assignment_id = 1
+            for drone, target_pos in debug_data['final_assignments_pairs'].items():
+                label_surface = font.render(str(assignment_id), True, (255, 0, 0))
+                target_label_pos = (target_pos[0] + 10, target_pos[1] - 10)
+                screen.blit(label_surface, target_label_pos)
+                drone_label_pos = (drone.x + 10, drone.y - 10)
+                screen.blit(label_surface, drone_label_pos)
+                assignment_id += 1

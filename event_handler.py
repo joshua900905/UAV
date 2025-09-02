@@ -17,7 +17,6 @@ class EventHandler:
 
     def handle(self):
         mouse_pos = pygame.mouse.get_pos()
-        
         if self.app.simulation.live_simulation_active or self.app.selected_drone_to_drag is not None:
             self.app.hovered_drone, self.app.hovered_edge = None, None
         else:
@@ -35,24 +34,28 @@ class EventHandler:
         hotkeys = CONFIG['hotkeys']
         if key == pygame.K_ESCAPE: self.app.quit()
         if key == hotkeys['toggle_hud_key']: self.app.toggle_hud()
-        if key == hotkeys['toggle_live_simulation_key']: self.app.toggle_live_simulation()
 
-        if not self.app.simulation.live_simulation_active:
-            if key == CONFIG['comm_range_style']['toggle_key']: self.app.toggle_comm_range()
-            elif key == CONFIG['grid_system']['toggle_key']: self.app.toggle_grid()
-            elif key == hotkeys['setup_coverage_scene_key']: self.app.setup_coverage_scene()
-            elif key == hotkeys['reset_key']: self.app.reset_simulation()
-            elif key == hotkeys['toggle_path_drawing_key']: self.app.toggle_path_drawing_mode()
-            elif key == hotkeys['clear_paths_key']: self.simulation.clear_all_paths()
-            elif key == hotkeys['switch_path_mode_key']: self.app.switch_path_mode()
-            elif key == hotkeys['delete_key'] and self.app.hovered_drone:
-                self.simulation.remove_drone(self.app.hovered_drone); self.app.hovered_drone = None
-            elif key == hotkeys['switch_pmst_mode_key']: self.simulation.switch_pmst_mode()
-            elif key == hotkeys['generate_pmst_key']: self.simulation.update_pmst(self.app.env_rect)
+        if self.app.simulation.live_simulation_active:
+            if key == hotkeys['toggle_live_simulation_key']:
+                self.app.toggle_live_simulation()
+            return
+
+        if key == CONFIG['comm_range_style']['toggle_key']: self.app.toggle_comm_range()
+        elif key == CONFIG['grid_system']['toggle_key']: self.app.toggle_grid()
+        elif key == hotkeys['setup_coverage_scene_key']: self.app.setup_coverage_scene()
+        elif key == hotkeys['reset_key']: self.app.reset_simulation()
+        elif key == hotkeys['toggle_path_drawing_key']: self.app.toggle_path_drawing_mode()
+        elif key == hotkeys['clear_paths_key']: self.simulation.clear_all_paths()
+        elif key == hotkeys['delete_key'] and self.app.hovered_drone:
+            self.simulation.remove_drone(self.app.hovered_drone); self.app.hovered_drone = None
+        elif key == hotkeys['switch_pmst_mode_key']: self.simulation.switch_pmst_mode()
+        elif key == hotkeys['generate_pmst_key']: self.simulation.update_pmst(self.app.env_rect)
+        elif key == hotkeys['debug_step_key']: self.app.simulation.run_debug_step(self.app.env_rect)
+        elif key == hotkeys['save_debug_frames_key']: self.app.save_debug_frames()
+        elif key == hotkeys['deploy_relays_key']: self.app.deploy_relays()
 
     def _handle_mouse_down(self, button, mouse_pos):
         if self.app.simulation.live_simulation_active: return
-
         if self.app.path_drawing_mode_on and self.app.path_drawing_sub_mode == 'line':
             if button == 1:
                 if self.app.line_drawing_start_pos is None: self.app.line_drawing_start_pos = mouse_pos
@@ -63,7 +66,6 @@ class EventHandler:
                     self.app.line_drawing_start_pos = None
                 return
             elif button == 3: self.app.line_drawing_start_pos = None; return
-
         if button == 1:
             conf = CONFIG['palette']
             for item in self.app.palette_items:

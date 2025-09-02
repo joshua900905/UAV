@@ -11,34 +11,45 @@ from utils import Path
 
 class SimulationState:
     def __init__(self):
+        # 初始化所有属性
         self.drones, self.paths, self.graph = [], [], nx.Graph()
         self.drone_id_counter, self.highlighted_cells = 0, set()
         self.locked_highlight_edges, self.pairing_exemptions = set(), []
         self.manual_edge_deletions = set()
         self.next_path_color_index = 0
+        
         self.pmst_calculator = PMSTCalculator()
         self.pmst_modes = ['search', 'busy', 'search_voronoi', 'busy_voronoi']
         self.pmst_mode_index = 0
         self.pmst_mode = self.pmst_modes[self.pmst_mode_index]
         self.pmst_graph = nx.Graph()
         self.voronoi_vertices = []
+        
         self.relay_positioner = RelayPositioner(CONFIG)
         self.live_simulation_active = False
+        
         self.current_timestep = 0
         self.max_timesteps = CONFIG['simulation_settings']['max_timesteps']
+        
+        self.debug_data = {}
+        
         self.reset()
 
     def reset(self):
+        # 重置时，清空所有列表和集合，而不是删除它们
         self.drones.clear(); self.paths.clear(); self.graph.clear()
         self.drone_id_counter = 0; self.highlighted_cells.clear()
         self.locked_highlight_edges.clear(); self.pairing_exemptions = []
         self.manual_edge_deletions.clear(); self.next_path_color_index = 0
+        
         self.pmst_mode_index = 0
         self.pmst_mode = self.pmst_modes[self.pmst_mode_index]
-        if hasattr(self, 'pmst_graph'): self.pmst_graph.clear()
-        if hasattr(self, 'voronoi_vertices'): self.voronoi_vertices.clear()
+        self.pmst_graph.clear()
+        self.voronoi_vertices.clear()
+        
         self.live_simulation_active = False
         self.current_timestep = 0
+        self.debug_data.clear()
 
     def add_drone(self, x, y, type_id, env_rect):
         new_drone = Drone(self.drone_id_counter, x, y, type_id)
@@ -71,10 +82,12 @@ class SimulationState:
         active, available = [], []
         relay_type_id = next((i for i, dt in enumerate(CONFIG['drone_types']) if dt['name'] == "t = t+1 Relay"), -1)
         if relay_type_id == -1: return [], []
+        
         gcs_vec = pygame.Vector2(gcs_pos)
         for drone in self.drones:
             if drone.type_id == relay_type_id:
-                if drone.path is None and pygame.Vector2(drone.x, drone.y).distance_to(gcs_vec) < tolerance:
+                is_at_gcs = pygame.Vector2(drone.x, drone.y).distance_to(gcs_vec) < tolerance
+                if drone.path is None and is_at_gcs:
                     available.append(drone)
                 else:
                     active.append(drone)
@@ -151,3 +164,58 @@ class SimulationState:
     def update_pmst(self, env_rect):
         print(f"Generating PMST for mode '{self.pmst_mode.upper()}'...")
         self.pmst_graph, self.voronoi_vertices = self.pmst_calculator.calculate(self.pmst_mode, self.drones, env_rect)
+
+    def run_debug_step(self, env_rect):
+        print("\n--- Running Single Debug Step (IDEALIZED MODE) ---")
+        self.debug_data.clear()
+
+        gcs = next((d for d in self.drones if "GCS" in d.spec['name']), None)
+        search_drones = [d for d in self.drones if "t = t+1 Search" in d.spec['name']]
+        relay_drones = [d for d in self.drones if "t = t+1 Relay" in d.spec['name']]
+        
+        if not gcs or not search_drones:
+            print("ERROR: Not enough drones for debug (Need GCS and t+1 Search Drones).")
+            return
+
+        rp = self.relay_positioner
+        if not rp.update_comm_radius(self.drones) or rp.comm_radius == 0:
+            print("ERROR: Could not determine comm_radius for debug step.")
+            return
+
+        all_drones_for_pmst = [gcs] + search_drones + relay_drones
+        
+        pmst_nodes = rp.pmst_calculator._get_input_nodes_for_mode('busy_voronoi', all_drones_for_pmst, env_rect)
+        steiner_points = rp._min_relay(pmst_nodes)
+        self.debug_data['steiner_points'] = steiner_points
+        
+        temp_graph = nx.Graph()
+        nodes_for_mst = {i: pos for i, pos in enumerate(steiner_points)}
+        for i, p1 in enumerate(steiner_points):
+            for j, p2 in enumerate(steiner_points):
+                if i >= j: continue
+                temp_graph.add_edge(i, j, weight=math.hypot(p1[0]-p2[0], p1[1]-p2[1]))
+        if temp_graph.nodes:
+            mst_edges = nx.minimum_spanning_tree(temp_graph).edges()
+            self.debug_data['steiner_mst'] = [(nodes_for_mst[u], nodes_for_mst[v]) for u, v in mst_edges]
+        print(f"[MinRelay] Generated {len(steiner_points)} Steiner points.")
+
+        init_targets = rp._min_cost_task_greedy(steiner_points, relay_drones, ideal_mode=True)
+        self.debug_data['init_assignments'] = { r: target for r, target in init_targets.items() }
+        print(f"[MinCostTask-Init] Assigned IDEAL initial targets for {len(init_targets)} relays.")
+        
+        p_temp_positions = list(init_targets.values())
+        search_next_pos = [d.get_next_position() for d in search_drones]
+        p_init_positions = p_temp_positions
+        if not rp._check_connectivity(search_next_pos, p_temp_positions, (gcs.x, gcs.y)):
+            print("  WARNING: Network still disconnected with ideal relay positions. Adding P_R as fallback.")
+            p_init_positions.extend([(r.x, r.y) for r in relay_drones])
+        
+        # --- 核心修正：呼叫正确的函式名 ---
+        p_opt_positions = rp._used_relay_set(p_init_positions, search_next_pos, (gcs.x, gcs.y))
+        self.debug_data['opt_points'] = p_opt_positions
+        print(f"[UsedRelaySet] Refined to {len(p_opt_positions)} optimal positions.")
+
+        final_targets = rp._min_cost_task_optimal(p_opt_positions, relay_drones, ideal_mode=True)
+        self.debug_data['final_assignments_pairs'] = { r: target for r, target in final_targets.items() if pygame.Vector2(r.x, r.y).distance_to(target) > 1.0 }
+        print(f"[MinCostTask-Opt] Assigned final targets for {len(final_targets)} relays.")
+        print(f"  -> Found {len(self.debug_data['final_assignments_pairs'])} non-stationary assignments.")
