@@ -11,7 +11,7 @@ from utils import Path
 
 class SimulationState:
     def __init__(self):
-        # 初始化所有属性
+        # 初始化所有屬性
         self.drones, self.paths, self.graph = [], [], nx.Graph()
         self.drone_id_counter, self.highlighted_cells = 0, set()
         self.locked_highlight_edges, self.pairing_exemptions = set(), []
@@ -29,14 +29,14 @@ class SimulationState:
         self.live_simulation_active = False
         
         self.current_timestep = 0
-        self.max_timesteps = CONFIG['simulation_settings']['max_timesteps']
+        self.last_chosen_strategy = "None"
         
         self.debug_data = {}
         
         self.reset()
 
     def reset(self):
-        # 重置时，清空所有列表和集合，而不是删除它们
+        # 重置時，清空所有列表和集合
         self.drones.clear(); self.paths.clear(); self.graph.clear()
         self.drone_id_counter = 0; self.highlighted_cells.clear()
         self.locked_highlight_edges.clear(); self.pairing_exemptions = []
@@ -50,6 +50,7 @@ class SimulationState:
         self.live_simulation_active = False
         self.current_timestep = 0
         self.debug_data.clear()
+        self.last_chosen_strategy = "None"
 
     def add_drone(self, x, y, type_id, env_rect):
         new_drone = Drone(self.drone_id_counter, x, y, type_id)
@@ -95,10 +96,7 @@ class SimulationState:
 
     def step_simulation(self, env_rect):
         if not self.live_simulation_active: return
-        if self.current_timestep >= self.max_timesteps:
-            print(f"Mission finished at timestep {self.current_timestep}/{self.max_timesteps}.")
-            self.live_simulation_active = False
-            return
+
         self.current_timestep += 1
         
         gcs = next((d for d in self.drones if "GCS" in d.spec['name']), None)
@@ -108,13 +106,35 @@ class SimulationState:
         search_drones = [d for d in self.drones if "t = t+1 Search" in d.spec['name']]
         active_relays, available_relays = self.get_active_and_available_relays((gcs.x, gcs.y))
         
+        # 移動所有有路徑的無人機
         for drone in search_drones: drone.move_on_path()
+        for drone in active_relays: drone.move_on_path()
 
+        # 檢查任務是否完成
+        if search_drones:
+            mission_complete = all(d.is_path_complete() for d in search_drones)
+            if mission_complete:
+                print(f"Mission complete! All search drones finished paths at timestep {self.current_timestep}.")
+                self.live_simulation_active = False
+                for d in search_drones: d.path = None # 清理路徑
+                # 讓中繼機返回基地 (可選)
+                for r in active_relays:
+                    gcs_path = Path(color=(0,0,0)); gcs_path.add_point((gcs.x, gcs.y))
+                    r.assign_path(gcs_path)
+                return
+
+        # 如果任務未完成，則更新中繼策略
         if search_drones:
             all_drones_for_pmst = [gcs] + search_drones + active_relays
-            targets = self.relay_positioner.update(all_drones_for_pmst, search_drones, active_relays, available_relays, gcs, env_rect)
+            targets, chosen_strategy = self.relay_positioner.update(
+                all_drones_for_pmst, search_drones, active_relays, available_relays, gcs, env_rect
+            )
+            self.last_chosen_strategy = chosen_strategy
+            
             for drone, target_pos in targets.items():
-                drone.move_to_target(target_pos)
+                target_path = Path(color=(0,0,0)); target_path.add_point(target_pos)
+                drone.assign_path(target_path)
+        
         self.update_graph()
 
     def find_drone_at(self, pos):
@@ -168,26 +188,20 @@ class SimulationState:
     def run_debug_step(self, env_rect):
         print("\n--- Running Single Debug Step (IDEALIZED MODE) ---")
         self.debug_data.clear()
-
         gcs = next((d for d in self.drones if "GCS" in d.spec['name']), None)
         search_drones = [d for d in self.drones if "t = t+1 Search" in d.spec['name']]
         relay_drones = [d for d in self.drones if "t = t+1 Relay" in d.spec['name']]
-        
         if not gcs or not search_drones:
             print("ERROR: Not enough drones for debug (Need GCS and t+1 Search Drones).")
             return
-
         rp = self.relay_positioner
         if not rp.update_comm_radius(self.drones) or rp.comm_radius == 0:
             print("ERROR: Could not determine comm_radius for debug step.")
             return
-
         all_drones_for_pmst = [gcs] + search_drones + relay_drones
-        
         pmst_nodes = rp.pmst_calculator._get_input_nodes_for_mode('busy_voronoi', all_drones_for_pmst, env_rect)
         steiner_points = rp._min_relay(pmst_nodes)
         self.debug_data['steiner_points'] = steiner_points
-        
         temp_graph = nx.Graph()
         nodes_for_mst = {i: pos for i, pos in enumerate(steiner_points)}
         for i, p1 in enumerate(steiner_points):
@@ -198,23 +212,18 @@ class SimulationState:
             mst_edges = nx.minimum_spanning_tree(temp_graph).edges()
             self.debug_data['steiner_mst'] = [(nodes_for_mst[u], nodes_for_mst[v]) for u, v in mst_edges]
         print(f"[MinRelay] Generated {len(steiner_points)} Steiner points.")
-
         init_targets = rp._min_cost_task_greedy(steiner_points, relay_drones, ideal_mode=True)
         self.debug_data['init_assignments'] = { r: target for r, target in init_targets.items() }
         print(f"[MinCostTask-Init] Assigned IDEAL initial targets for {len(init_targets)} relays.")
-        
         p_temp_positions = list(init_targets.values())
         search_next_pos = [d.get_next_position() for d in search_drones]
         p_init_positions = p_temp_positions
         if not rp._check_connectivity(search_next_pos, p_temp_positions, (gcs.x, gcs.y)):
             print("  WARNING: Network still disconnected with ideal relay positions. Adding P_R as fallback.")
             p_init_positions.extend([(r.x, r.y) for r in relay_drones])
-        
-        # --- 核心修正：呼叫正确的函式名 ---
         p_opt_positions = rp._used_relay_set(p_init_positions, search_next_pos, (gcs.x, gcs.y))
         self.debug_data['opt_points'] = p_opt_positions
         print(f"[UsedRelaySet] Refined to {len(p_opt_positions)} optimal positions.")
-
         final_targets = rp._min_cost_task_optimal(p_opt_positions, relay_drones, ideal_mode=True)
         self.debug_data['final_assignments_pairs'] = { r: target for r, target in final_targets.items() if pygame.Vector2(r.x, r.y).distance_to(target) > 1.0 }
         print(f"[MinCostTask-Opt] Assigned final targets for {len(final_targets)} relays.")

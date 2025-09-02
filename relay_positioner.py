@@ -9,14 +9,13 @@ from pmst_calculator import PMSTCalculator
 from utils import Path
 
 class RelayPositioner:
-    """实作论文演算法，并处理按需部署逻辑。"""
     def __init__(self, config):
         self.config = config
         self.pmst_calculator = PMSTCalculator()
         self.comm_radius = 0
+        self.strategies = ['search', 'busy', 'search_voronoi', 'busy_voronoi']
 
     def update_comm_radius(self, drones):
-        """一个稳健的函式，用于从任何无人机更新通信半径。"""
         relay_prototype = next((d for d in drones if "t = t+1 Relay" in d.spec['name']), None)
         if relay_prototype: self.comm_radius = relay_prototype.comm_radius; return True
         search_prototype = next((d for d in drones if "t = t+1 Search" in d.spec['name']), None)
@@ -25,105 +24,77 @@ class RelayPositioner:
         if gcs_prototype: self.comm_radius = gcs_prototype.comm_radius; return True
         return False
 
-    def update(self, all_drones_for_pmst, search_drones, active_relay_drones, available_relay_drones, gcs, env_rect):
-        """演算法主迴圈，对應论文图 1 的流程。"""
-        if not search_drones or not gcs: return {}
-        if not self.update_comm_radius(all_drones_for_pmst) or self.comm_radius == 0:
-            print("ERROR: Could not determine a valid comm_radius. Aborting update.")
-            return {}
+    def update(self, all_drones, search_drones, active_relay_drones, available_relay_drones, gcs, env_rect):
+        if not search_drones or not gcs: return {}, "No Search Drones"
+        if not self.update_comm_radius(all_drones) or self.comm_radius == 0:
+            return {}, "No Comm Radius"
 
         gcs_pos = (gcs.x, gcs.y)
         search_next_pos = [d.get_next_position() for d in search_drones]
         active_relays_with_pos = {r: (r.x, r.y) for r in active_relay_drones}
 
-        # 演算法 1: ConnCheckPre
-        is_connected_pre = self._check_connectivity(search_next_pos, list(active_relays_with_pos.values()), gcs_pos)
-        print(f"[ConnCheckPre] Is network predicted to be connected? -> {is_connected_pre}")
-        if is_connected_pre:
-            print(" -> Network OK. Relays remain stationary.")
-            return {r: pos for r, pos in active_relays_with_pos.items()}
+        if self._check_connectivity(search_next_pos, list(active_relays_with_pos.values()), gcs_pos):
+            return {r: pos for r, pos in active_relays_with_pos.items()}, "None (Stable)"
 
-        print(" -> Network DISCONNECT predicted! Recalculating relay positions...")
-        
-        # 演算法 2: MinRelay
-        pmst_nodes = self.pmst_calculator._get_input_nodes_for_mode('busy_voronoi', all_drones_for_pmst, env_rect)
-        steiner_points = self._min_relay(pmst_nodes)
-        print(f"  [MinRelay] Generated {len(steiner_points)} Steiner points.")
-        
-        # 演算法 3 (初始化)
-        p_temp_targets = self._min_cost_task_greedy(steiner_points, active_relay_drones)
-        p_temp_positions = list(p_temp_targets.values())
+        print(" -> Network DISCONNECT predicted! Evaluating strategies...")
+        strategy_results = {}
+        strategy_costs = {}
+        for strategy in self.strategies:
+            pmst_input_nodes = self.pmst_calculator._get_input_nodes_for_mode(strategy, all_drones, env_rect)
+            steiner_points = self._min_relay(pmst_input_nodes)
+            p_opt = self._used_relay_set(steiner_points, search_next_pos, gcs_pos)
+            num_new_relays_needed = max(0, len(p_opt) - len(active_relay_drones))
+            strategy_results[strategy] = p_opt
+            strategy_costs[strategy] = num_new_relays_needed
+            print(f"  - Strategy '{strategy}': requires {len(p_opt)} total relays -> {num_new_relays_needed} new.")
 
-        # 演算法 4: ConnCheckPost
-        p_init_positions = p_temp_positions
-        if not self._check_connectivity(search_next_pos, p_temp_positions, gcs_pos):
-            p_init_positions.extend(list(active_relays_with_pos.values()))
-        
-        # 演算法 5: UsedRelaySet
-        p_opt_positions = self._used_relay_set(p_init_positions, search_next_pos, gcs_pos)
-        print(f"  [UsedRelaySet] Refined to {len(p_opt_positions)} optimal positions.")
-        
-        # 演算法 3 (優化)
+        best_strategy = min(strategy_costs, key=strategy_costs.get)
+        p_opt_positions = strategy_results[best_strategy]
+        print(f" -> BEST STRATEGY: '{best_strategy}' with cost {strategy_costs[best_strategy]}")
+
         all_available_relays = active_relay_drones + available_relay_drones
-        final_targets = self._min_cost_task_optimal(p_opt_positions, all_available_relays)
-        print(f"  [MinCostTask-Opt] Assigned targets for {len(final_targets)} relays.")
-
-        # 为新派遣的无人机设定状态
+        final_targets = self._min_cost_task_greedy(p_opt_positions, all_available_relays)
+        
+        print(f"  [MinCostTask-Greedy] Assigned flying targets for {len(final_targets)} relays.")
         for drone, target in final_targets.items():
-            current_pos = pygame.Vector2(drone.x, drone.y)
-            if drone in available_relay_drones and current_pos.distance_to(target) > 0.1:
-                temp_path = Path(color=(0,0,0)); temp_path.add_point(target)
-                drone.assign_path(temp_path)
-                print(f"    -> DEPLOYING new relay {drone.id} to {target}")
-        return final_targets
+            if drone in available_relay_drones and pygame.Vector2(drone.x, drone.y).distance_to(target) > 1:
+                drone.assign_path(Path(color=(0,0,0), style='solid'))
+                print(f"    -> DEPLOYING new relay {drone.id} towards {target}")
+
+        return final_targets, best_strategy
 
     def _used_relay_set(self, p_init, search_next_pos, gcs_pos):
-        """忠实复现论文演算法 5：使用 Dijkstra 最短路径来筛选必要的中继点。"""
         if not search_next_pos or not gcs_pos: return []
-
-        # 节点顺序: [GCS, Search1, Search2, ..., RelayCandidate1, RelayCandidate2, ...]
         nodes = [gcs_pos] + search_next_pos + p_init
         graph = nx.Graph()
         graph.add_nodes_from(range(len(nodes)))
-
         for i in range(len(nodes)):
             for j in range(i + 1, len(nodes)):
                 dist = math.hypot(nodes[i][0] - nodes[j][0], nodes[i][1] - nodes[j][1])
                 if dist <= self.comm_radius:
                     graph.add_edge(i, j)
-        
         used_relay_indices = set()
         num_search_nodes = len(search_next_pos)
-        
         if 0 not in graph: return []
-
-        # 为每一架搜寻无人机计算到 GCS 的最短路径
         for i in range(1, num_search_nodes + 1):
             if i in graph and nx.has_path(graph, source=0, target=i):
                 path_indices = nx.shortest_path(graph, source=0, target=i)
-                
-                # 筛选出路径上所有的中继点
                 for node_idx in path_indices:
                     if node_idx > num_search_nodes:
                         used_relay_indices.add(node_idx)
-        
         return [nodes[i] for i in used_relay_indices]
-
+        
     def _check_connectivity(self, search_nodes_pos, relay_nodes_pos, gcs_pos):
         if not search_nodes_pos: return True
         if not gcs_pos: return False
-        
         nodes = [gcs_pos] + search_nodes_pos + relay_nodes_pos
         graph = nx.Graph()
         graph.add_nodes_from(range(len(nodes)))
-
         for i in range(len(nodes)):
             for j in range(i + 1, len(nodes)):
                 if math.hypot(nodes[i][0] - nodes[j][0], nodes[i][1] - nodes[j][1]) <= self.comm_radius:
                     graph.add_edge(i, j)
-        
         if 0 not in graph: return False
-
         for i in range(1, len(search_nodes_pos) + 1):
             if i not in graph or not nx.has_path(graph, source=0, target=i):
                 return False
@@ -149,19 +120,32 @@ class RelayPositioner:
         return list(steiner_points)
 
     def _min_cost_task_greedy(self, candidate_positions, relay_drones, ideal_mode=False):
+        """
+        核心修正：函式定义中加入 ideal_mode=False 参数。
+        """
         targets = {}
         unassigned_positions = list(candidate_positions)
-        for relay in relay_drones:
-            if not unassigned_positions: break
-            best_pos = min(unassigned_positions, key=lambda p: math.hypot(relay.x - p[0], relay.y - p[1]))
+        relays_to_assign = list(relay_drones)
+        
+        for pos in unassigned_positions:
+            if not relays_to_assign: break
+            
+            best_relay = min(relays_to_assign, key=lambda r: math.hypot(r.x - pos[0], r.y - pos[1]))
+            
             if ideal_mode:
-                targets[relay] = best_pos
+                targets[best_relay] = pos
             else:
-                direction = (pygame.Vector2(best_pos) - pygame.Vector2(relay.x, relay.y))
-                if direction.length() > 0: direction.normalize_ip()
-                new_pos = pygame.Vector2(relay.x, relay.y) + direction * relay.speed
-                targets[relay] = (new_pos.x, new_pos.y)
-            unassigned_positions.remove(best_pos)
+                direction = (pygame.Vector2(pos) - pygame.Vector2(best_relay.x, best_relay.y))
+                if direction.length() > 0: 
+                    direction.normalize_ip()
+                new_pos = pygame.Vector2(best_relay.x, best_relay.y) + direction * best_relay.speed
+                targets[best_relay] = (new_pos.x, new_pos.y)
+            
+            relays_to_assign.remove(best_relay)
+            
+        for relay in relays_to_assign:
+            targets[relay] = (relay.x, relay.y)
+            
         return targets
 
     def _min_cost_task_optimal(self, candidate_positions, relay_drones, ideal_mode=False):
@@ -173,6 +157,10 @@ class RelayPositioner:
                 dist = math.hypot(relay.x - pos[0], relay.y - pos[1])
                 if ideal_mode or dist <= relay.speed:
                     cost_matrix[r_idx, p_idx] = dist
+        
+        if not np.any(np.isfinite(cost_matrix)):
+            return {r: (r.x, r.y) for r in relay_drones}
+
         relay_indices, pos_indices = linear_sum_assignment(cost_matrix)
         targets, assigned_relays = {}, set()
         for r_idx, p_idx in zip(relay_indices, pos_indices):

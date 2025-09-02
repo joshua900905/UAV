@@ -72,38 +72,41 @@ CONFIG = {
     },
     
     "simulation_settings": {
-        "max_timesteps": 400
     },
 
     # 侦错绘图设定
     "debug_drawing": {
-        "steiner_point_color": (255, 0, 255),      # 洋红色
+        "steiner_point_color": (255, 0, 255),
         "steiner_point_radius": 5,
-        "opt_point_color": (0, 255, 255),          # 青色
+        "opt_point_color": (0, 255, 255),
         "opt_point_radius": 7,
-        "assignment_line_color_init": (255, 165, 0), # 橘色
-        "assignment_line_color_opt": (50, 205, 50),  # 莱姆绿
+        "assignment_line_color_init": (255, 165, 0),
+        "assignment_line_color_opt": (50, 205, 50),
         "assignment_line_thickness": 1,
     },
 
     # 快捷键设定
     "hotkeys": {
         "delete_key": pygame.K_d,
-        "toggle_edge_highlight_key": pygame.K_e,
-        "clear_pairings_key": pygame.K_w,
-        "toggle_edge_deletion_key": pygame.K_s,
         "reset_key": pygame.K_a,
         "toggle_path_drawing_key": pygame.K_p,
         "clear_paths_key": pygame.K_o,
-        "switch_path_mode_key": pygame.K_m,
         "toggle_hud_key": pygame.K_RETURN,
-        "switch_pmst_mode_key": pygame.K_TAB,
-        "generate_pmst_key": pygame.K_g,
         "setup_coverage_scene_key": pygame.K_b,
         "toggle_live_simulation_key": pygame.K_l,
+        
+        # 侦错模式相关快捷键
+        "switch_pmst_mode_key": pygame.K_TAB, # <-- 核心修正：加回这一行
+        "generate_pmst_key": pygame.K_g,
         "debug_step_key": pygame.K_F5,
         "save_debug_frames_key": pygame.K_F6,
-        "deploy_relays_key": pygame.K_F7
+        "deploy_relays_key": pygame.K_F7,
+        
+        # 为了完整性，将所有之前可能遗漏的键都加回来
+        "toggle_edge_highlight_key": pygame.K_e,
+        "clear_pairings_key": pygame.K_w,
+        "toggle_edge_deletion_key": pygame.K_s,
+        "switch_path_mode_key": pygame.K_m
     },
 
     # 高亮颜色
@@ -115,7 +118,7 @@ CONFIG = {
     "drone_types": [
         {
             "name": "t = t Search", "shape": "circle", "color": (0, 100, 0), 
-            "comm_radius": 150, "quantity_initial": 1, "speed": 2
+            "comm_radius": 150, "quantity_initial": 0, "speed": 2
         },
         {
             "name": "t = t Relay", "shape": "square", "color": (0, 0, 139), 
@@ -127,7 +130,7 @@ CONFIG = {
         },
         {
             "name": "t = t+1 Relay", "shape": "square", "color": (255, 255, 0),
-            "comm_radius": 80, "quantity_initial": 40, "speed": 8 # 数量由 F7 控制
+            "comm_radius": 80, "quantity_initial": 40, "speed": 8
         },
         {
             "name": "GCS", "shape": "triangle", "color": (160, 32, 240),
@@ -135,7 +138,7 @@ CONFIG = {
         },
         {
             "name": "TARGET", "shape": "star", "color": (255, 215, 0),
-            "comm_radius": 0, "quantity_initial": 1, "speed": 0
+            "comm_radius": 0, "quantity_initial": 0, "speed": 0
         }
     ]
 }

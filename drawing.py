@@ -62,11 +62,13 @@ def draw_palette(screen, font, palette_items, placing_drone_type, screen_width, 
             comm_surface = font.render(f"Radius: {item['drone'].comm_radius}", True, conf['font_color'])
             screen.blit(comm_surface, (item_rect_dyn.x + 50, item_rect_dyn.y + 40))
 
-def draw_hud(screen, font, path_drawing_on, path_sub_mode, pmst_mode, is_live, timestep_info):
+def draw_hud(screen, font, path_drawing_on, path_sub_mode, pmst_mode, is_live, current_timestep):
     live_status = "ON" if is_live else "OFF"
-    time_text = f"Time: {timestep_info['current']}/{timestep_info['max']}"
+    time_text = f"Time: {current_timestep}"
     hud_texts = [
-        time_text, "",
+        time_text,
+        f"Chosen Strategy: {pmst_mode.upper()}",
+        "",
         "--- Controls ---",
         "B: Build & Start Mission",
         f"L: Toggle Live Sim ({live_status})",

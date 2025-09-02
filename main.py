@@ -150,7 +150,6 @@ class DroneSimulator:
         
         for stage in range(1, 5):
             self.screen.blit(clean_bg, (0, 0))
-            # --- 核心修正：加入 self.font 参数 ---
             draw_debug_info(self.screen, self.font, self.simulation.debug_data, stage)
             filename = f"{base_filename}_{stage}.png"
             pygame.image.save(self.screen, filename)
