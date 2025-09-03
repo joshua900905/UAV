@@ -2,6 +2,7 @@
 
 import pygame
 import random
+import csv # <-- 确保导入 csv 模组
 from config import CONFIG
 from simulation import SimulationState
 from event_handler import EventHandler
@@ -73,6 +74,9 @@ class DroneSimulator:
             self.update()
             self.renderer.render(self)
             self.clock.tick(60)
+        
+        # --- 核心修改：在结束时储存日誌 ---
+        self._save_analysis_log()
         pygame.quit()
 
     def update(self): self.simulation.update_highlighted_cells(self.env_rect)
@@ -156,6 +160,24 @@ class DroneSimulator:
             print(f"Saved {filename}")
         
         pygame.display.flip()
+
+    def _save_analysis_log(self):
+        """将模拟过程中的分析数据储存为 CSV 档案。"""
+        if not self.simulation.analysis_log:
+            print("No analysis data to save.")
+            return
+        
+        filename = "analysis_log.csv"
+        headers = list(self.simulation.analysis_log[0].keys())
+        
+        try:
+            with open(filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(self.simulation.analysis_log)
+            print(f"Analysis data successfully saved to {filename}")
+        except IOError:
+            print(f"Error: Could not write to file {filename}")
 
 if __name__ == '__main__':
     DroneSimulator().run()

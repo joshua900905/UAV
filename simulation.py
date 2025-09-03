@@ -11,46 +11,38 @@ from utils import Path
 
 class SimulationState:
     def __init__(self):
-        # 初始化所有屬性
         self.drones, self.paths, self.graph = [], [], nx.Graph()
         self.drone_id_counter, self.highlighted_cells = 0, set()
         self.locked_highlight_edges, self.pairing_exemptions = set(), []
         self.manual_edge_deletions = set()
         self.next_path_color_index = 0
-        
         self.pmst_calculator = PMSTCalculator()
         self.pmst_modes = ['search', 'busy', 'search_voronoi', 'busy_voronoi']
         self.pmst_mode_index = 0
         self.pmst_mode = self.pmst_modes[self.pmst_mode_index]
         self.pmst_graph = nx.Graph()
         self.voronoi_vertices = []
-        
         self.relay_positioner = RelayPositioner(CONFIG)
         self.live_simulation_active = False
-        
         self.current_timestep = 0
         self.last_chosen_strategy = "None"
-        
         self.debug_data = {}
-        
+        self.analysis_log = []
         self.reset()
 
     def reset(self):
-        # 重置時，清空所有列表和集合
         self.drones.clear(); self.paths.clear(); self.graph.clear()
         self.drone_id_counter = 0; self.highlighted_cells.clear()
         self.locked_highlight_edges.clear(); self.pairing_exemptions = []
         self.manual_edge_deletions.clear(); self.next_path_color_index = 0
-        
         self.pmst_mode_index = 0
         self.pmst_mode = self.pmst_modes[self.pmst_mode_index]
-        self.pmst_graph.clear()
-        self.voronoi_vertices.clear()
-        
+        self.pmst_graph.clear(); self.voronoi_vertices.clear()
         self.live_simulation_active = False
         self.current_timestep = 0
         self.debug_data.clear()
         self.last_chosen_strategy = "None"
+        self.analysis_log.clear()
 
     def add_drone(self, x, y, type_id, env_rect):
         new_drone = Drone(self.drone_id_counter, x, y, type_id)
@@ -83,12 +75,10 @@ class SimulationState:
         active, available = [], []
         relay_type_id = next((i for i, dt in enumerate(CONFIG['drone_types']) if dt['name'] == "t = t+1 Relay"), -1)
         if relay_type_id == -1: return [], []
-        
         gcs_vec = pygame.Vector2(gcs_pos)
         for drone in self.drones:
             if drone.type_id == relay_type_id:
-                is_at_gcs = pygame.Vector2(drone.x, drone.y).distance_to(gcs_vec) < tolerance
-                if drone.path is None and is_at_gcs:
+                if drone.path is None and pygame.Vector2(drone.x, drone.y).distance_to(gcs_vec) < tolerance:
                     available.append(drone)
                 else:
                     active.append(drone)
@@ -96,7 +86,6 @@ class SimulationState:
 
     def step_simulation(self, env_rect):
         if not self.live_simulation_active: return
-
         self.current_timestep += 1
         
         gcs = next((d for d in self.drones if "GCS" in d.spec['name']), None)
@@ -106,30 +95,24 @@ class SimulationState:
         search_drones = [d for d in self.drones if "t = t+1 Search" in d.spec['name']]
         active_relays, available_relays = self.get_active_and_available_relays((gcs.x, gcs.y))
         
-        # 移動所有有路徑的無人機
-        for drone in search_drones: drone.move_on_path()
-        for drone in active_relays: drone.move_on_path()
+        for drone in search_drones + active_relays: drone.move_on_path()
 
-        # 檢查任務是否完成
-        if search_drones:
-            mission_complete = all(d.is_path_complete() for d in search_drones)
-            if mission_complete:
-                print(f"Mission complete! All search drones finished paths at timestep {self.current_timestep}.")
-                self.live_simulation_active = False
-                for d in search_drones: d.path = None # 清理路徑
-                # 讓中繼機返回基地 (可選)
-                for r in active_relays:
-                    gcs_path = Path(color=(0,0,0)); gcs_path.add_point((gcs.x, gcs.y))
-                    r.assign_path(gcs_path)
-                return
+        mission_complete = search_drones and all(d.is_path_complete() for d in search_drones)
+        if mission_complete:
+            print(f"Mission complete! at timestep {self.current_timestep}.")
+            self.live_simulation_active = False
+            return
 
-        # 如果任務未完成，則更新中繼策略
         if search_drones:
             all_drones_for_pmst = [gcs] + search_drones + active_relays
-            targets, chosen_strategy = self.relay_positioner.update(
+            targets, analysis_data = self.relay_positioner.update(
                 all_drones_for_pmst, search_drones, active_relays, available_relays, gcs, env_rect
             )
-            self.last_chosen_strategy = chosen_strategy
+            
+            if analysis_data:
+                analysis_data['timestep'] = self.current_timestep
+                self.analysis_log.append(analysis_data)
+                self.last_chosen_strategy = analysis_data.get('strategy', 'N/A')
             
             for drone, target_pos in targets.items():
                 target_path = Path(color=(0,0,0)); target_path.add_point(target_pos)

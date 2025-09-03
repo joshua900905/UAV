@@ -34,7 +34,13 @@ class RelayPositioner:
         active_relays_with_pos = {r: (r.x, r.y) for r in active_relay_drones}
 
         if self._check_connectivity(search_next_pos, list(active_relays_with_pos.values()), gcs_pos):
-            return {r: pos for r, pos in active_relays_with_pos.items()}, "None (Stable)"
+            # --- 新增：为稳定状态也生成分析数据 ---
+            analysis_data = {
+                'strategy': 'None (Stable)',
+                'relay_count': len(active_relay_drones),
+                'tree_length': self._calculate_tree_length([gcs_pos] + search_next_pos + list(active_relays_with_pos.values()))
+            }
+            return {r: pos for r, pos in active_relays_with_pos.items()}, analysis_data
 
         print(" -> Network DISCONNECT predicted! Evaluating strategies...")
         strategy_results = {}
@@ -52,6 +58,15 @@ class RelayPositioner:
         p_opt_positions = strategy_results[best_strategy]
         print(f" -> BEST STRATEGY: '{best_strategy}' with cost {strategy_costs[best_strategy]}")
 
+        # --- 新增：计算最终树的量化指标 ---
+        final_tree_nodes = [gcs_pos] + search_next_pos + p_opt_positions
+        total_tree_length = self._calculate_tree_length(final_tree_nodes)
+        analysis_data = {
+            'strategy': best_strategy,
+            'relay_count': len(p_opt_positions),
+            'tree_length': total_tree_length
+        }
+
         all_available_relays = active_relay_drones + available_relay_drones
         final_targets = self._min_cost_task_greedy(p_opt_positions, all_available_relays)
         
@@ -61,7 +76,20 @@ class RelayPositioner:
                 drone.assign_path(Path(color=(0,0,0), style='solid'))
                 print(f"    -> DEPLOYING new relay {drone.id} towards {target}")
 
-        return final_targets, best_strategy
+        return final_targets, analysis_data
+
+    def _calculate_tree_length(self, points):
+        """新增：计算给定点集的最小生成树的总边长。"""
+        if len(points) < 2:
+            return 0.0
+        graph = nx.Graph()
+        for i, p1 in enumerate(points):
+            for j, p2 in enumerate(points):
+                if i >= j: continue
+                dist = math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+                graph.add_edge(i, j, weight=dist)
+        mst = nx.minimum_spanning_tree(graph)
+        return mst.size(weight='weight')
 
     def _used_relay_set(self, p_init, search_next_pos, gcs_pos):
         if not search_next_pos or not gcs_pos: return []
@@ -120,18 +148,12 @@ class RelayPositioner:
         return list(steiner_points)
 
     def _min_cost_task_greedy(self, candidate_positions, relay_drones, ideal_mode=False):
-        """
-        核心修正：函式定义中加入 ideal_mode=False 参数。
-        """
         targets = {}
         unassigned_positions = list(candidate_positions)
         relays_to_assign = list(relay_drones)
-        
         for pos in unassigned_positions:
             if not relays_to_assign: break
-            
             best_relay = min(relays_to_assign, key=lambda r: math.hypot(r.x - pos[0], r.y - pos[1]))
-            
             if ideal_mode:
                 targets[best_relay] = pos
             else:
@@ -140,12 +162,9 @@ class RelayPositioner:
                     direction.normalize_ip()
                 new_pos = pygame.Vector2(best_relay.x, best_relay.y) + direction * best_relay.speed
                 targets[best_relay] = (new_pos.x, new_pos.y)
-            
             relays_to_assign.remove(best_relay)
-            
         for relay in relays_to_assign:
             targets[relay] = (relay.x, relay.y)
-            
         return targets
 
     def _min_cost_task_optimal(self, candidate_positions, relay_drones, ideal_mode=False):
@@ -157,10 +176,8 @@ class RelayPositioner:
                 dist = math.hypot(relay.x - pos[0], relay.y - pos[1])
                 if ideal_mode or dist <= relay.speed:
                     cost_matrix[r_idx, p_idx] = dist
-        
         if not np.any(np.isfinite(cost_matrix)):
             return {r: (r.x, r.y) for r in relay_drones}
-
         relay_indices, pos_indices = linear_sum_assignment(cost_matrix)
         targets, assigned_relays = {}, set()
         for r_idx, p_idx in zip(relay_indices, pos_indices):
