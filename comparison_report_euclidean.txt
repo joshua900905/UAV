@@ -1,0 +1,23 @@
+================================================================================
+UAV Strategy Comparison: Hybrid vs. GA-mTSP vs. ACO-mTSP
+================================================================================
+Generated on: 2025-09-17 20:44:03
+
+--- Executive Summary ---
+
+Across 9 scenarios, win counts are:
+  - Hybrid: 7 wins
+  - ACO-mTSP: 2 wins
+
+--- Detailed Results Table ---
+
+  Scenario (NxN, K) Winner (Time)   Hybrid Strat. Hybrid Time GA-mTSP Time ACO-mTSP Time Hybrid Dist. GA-mTSP Dist. ACO-mTSP Dist.
+0          (8x8, 2)      ACO-mTSP     Interleaved        43.7         75.7          31.0         69.3         144.7           60.0
+1          (8x8, 3)        Hybrid  Vertical Split        26.3         62.3          29.7         70.7         175.0           79.0
+2          (8x8, 5)        Hybrid  Vertical Split        20.3         43.7          22.0         82.7         202.0           93.3
+3        (10x10, 2)      ACO-mTSP     Interleaved        53.0         72.3          39.0         89.3         137.3           72.7
+4        (10x10, 5)        Hybrid  Vertical Split        26.7         83.0          34.7        116.7         402.0          154.0
+5        (10x10, 8)        Hybrid  Vertical Split        24.0         34.0          29.3        154.7         241.3          197.3
+6        (12x12, 3)        Hybrid     Interleaved        45.7        123.0          61.3        113.3         348.7          172.0
+7        (12x12, 5)        Hybrid  Vertical Split        35.0         86.3          43.7        157.7         414.3          193.0
+8        (12x12, 8)        Hybrid  Vertical Split        26.7         67.0          43.7        184.3         514.3          300.3
