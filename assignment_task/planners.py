@@ -5,12 +5,15 @@ import random
 import math
 from abc import ABC, abstractmethod
 from sklearn.cluster import KMeans
+from scipy.optimize import linear_sum_assignment
+from typing import List, Tuple, Optional, Dict, Any
 
 # --- 全局常量 ---
 GCS_POS = (0.5, 0.5)
+DRONE_SPEED = 10.0 # 假設一個全局速度
 
 # ==============================================================================
-# ===== 演算法接口 (抽象基礎類別) ============================================
+# ===== 演算法接口 (保持不變) ================================================
 # ==============================================================================
 class Planner(ABC):
     """
@@ -21,59 +24,54 @@ class Planner(ABC):
         self.K = K
         self.strategy = "Base Planner"
         self.drone_speed = drone_speed
-        
-        self.individual_distances = []
-        self.individual_work_distances = []
-        self.individual_commute_distances = []
-        self.individual_go_work_distances = []
-        self.trails = [[] for _ in range(K)]
-
+    
     @staticmethod
     def euclidean_distance(p1: tuple, p2: tuple) -> float:
         """計算兩點之間的歐幾里得距離。"""
         return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
-    @abstractmethod
-    def plan_paths(self):
+    def plan_paths_for_points(self, points_to_cover: list, num_drones: int, start_positions: list, params: Optional[Dict] = None) -> list:
         """
-        規劃無人機的路徑。
+        為一個特定的點集進行路徑規劃的抽象方法。
         """
         raise NotImplementedError
 
 # ==============================================================================
-# ===== K-Means / GA Planner ===================================================
+# ===== 基礎路徑規劃器 (K-Means / GA) ========================================
 # ==============================================================================
 class ImprovedKMeansGATSPPlanner(Planner):
+    """
+    一個具體的路徑規劃器，負責將一組點分配給多架無人機並為每架無人機規劃TSP路徑。
+    """
     def __init__(self, N, K, drone_speed=1.0):
         super().__init__(N, K, drone_speed)
         self.strategy = "K-Means/Improved-GA"
 
-    def _greedy_initial_path(self, points, start_node):
-        if not points: return []
-        unvisited = list(points)
-        first_point = min(unvisited, key=lambda p: self.euclidean_distance(start_node, p))
-        unvisited.remove(first_point)
-        path = [first_point]
-        current_point = first_point
-        while unvisited:
-            next_point = min(unvisited, key=lambda p: self.euclidean_distance(current_point, p))
-            unvisited.remove(next_point)
-            path.append(next_point)
-            current_point = next_point
-        return path
+    def solve_hungarian_assignment(self, agents_pos: List[Tuple], tasks_pos: List[Tuple]) -> Optional[List[Tuple[int, int]]]:
+        """【新增】為舊策略提供一個標準的匈牙利分配方法（最小化總和）。"""
+        if not tasks_pos or not agents_pos:
+            return []
+        
+        cost_matrix = np.array([[self.euclidean_distance(a, t) for t in tasks_pos] for a in agents_pos])
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        return list(zip(row_ind, col_ind))
 
-    def _solve_single_tsp_ga_improved(self, points, start_node):
-        # 【最終防禦】如果傳入的點列表為空，直接返回空路徑，防止任何後續錯誤。
-        if not points:
-            return [], 0.0, 0.0, 0.0, 0.0
-            
+    def _solve_single_tsp_ga_improved(self, points: List[Tuple], start_node: Tuple, params: Optional[Dict] = None) -> Tuple[List[Tuple], float]:
+        """為單架無人機求解 TSP 問題，返回 (最佳路徑, 路徑長度)。"""
         num_points = len(points)
+        if not points: 
+            return [], 0.0
         if num_points == 1:
-            commute_dist = self.euclidean_distance(start_node, points[0])
-            total_dist = commute_dist * 2
-            return points, total_dist, 0.0, commute_dist, commute_dist
+            length = self.euclidean_distance(start_node, points[0]) + self.euclidean_distance(points[0], start_node)
+            return points, length
 
-        POP_SIZE, GENS, MUT_RATE, ELITISM_RATE, R = 30, 80, 0.3, 0.1, 1.5
+        # 允許傳入參數以控制GA的性能，如果沒有則使用默認值
+        ga_params = params or {}
+        POP_SIZE = ga_params.get('ga_pop_size', 30)
+        GENS = ga_params.get('ga_generations', 80)
+        MUT_RATE = ga_params.get('ga_mut_rate', 0.3)
+        ELITISM_RATE = ga_params.get('ga_elitism_rate', 0.1)
+        R = ga_params.get('ga_r_factor', 1.5)
 
         def calculate_path_length(route):
             if not route: return 0.0
@@ -82,6 +80,7 @@ class ImprovedKMeansGATSPPlanner(Planner):
             path_len += self.euclidean_distance(route[-1], start_node)
             return path_len
 
+        # --- 遺傳演算法核心邏輯 ---
         population = []
         greedy_path = self._greedy_initial_path(points, start_node)
         if greedy_path: population.append(greedy_path)
@@ -94,7 +93,8 @@ class ImprovedKMeansGATSPPlanner(Planner):
             population = [route for route, length in sorted_tuples]
             
             if sorted_tuples[0][1] < best_len_overall:
-                best_len_overall, best_route_overall = sorted_tuples[0][1], sorted_tuples[0][0]
+                best_len_overall = sorted_tuples[0][1]
+                best_route_overall = sorted_tuples[0][0]
             
             new_population = population[:int(POP_SIZE * ELITISM_RATE)]
             while len(new_population) < POP_SIZE:
@@ -121,254 +121,193 @@ class ImprovedKMeansGATSPPlanner(Planner):
                 new_population.append(child)
             population = new_population
 
-        best_route = best_route_overall or greedy_path
-        if not best_route: return [], 0.0, 0.0, 0.0, 0.0
+        best_route = best_route_overall if best_route_overall is not None else greedy_path
+        best_len = best_len_overall if best_len_overall != float('inf') else calculate_path_length(greedy_path)
         
-        work_len = sum(self.euclidean_distance(best_route[i], best_route[i+1]) for i in range(len(best_route) - 1))
-        commute_len = self.euclidean_distance(start_node, best_route[0])
-        go_work_len = commute_len + work_len
-        total_len = go_work_len + self.euclidean_distance(best_route[-1], start_node)
-        return best_route, total_len, work_len, commute_len, go_work_len
+        return best_route, best_len
+    
+    def _greedy_initial_path(self, points: List[Tuple], start_node: Tuple) -> List[Tuple]:
+        """一個簡單的貪婪算法，用於快速生成一條初始路徑。"""
+        if not points: 
+            return []
         
-    def plan_paths_for_points(self, points_to_cover: list, num_drones: int, start_positions: list) -> list:
-        """
-        【核心重構 & 最終修正】為一個特定的點集進行路徑規劃。
-        - 此版本增加了對空`points_to_cover`的絕對防禦，防止KMeans崩潰。
-        """
-        # 【最終修正】如果沒有點需要覆蓋，立即返回空路徑，這是最安全的做法。
+        unvisited = points[:]
+        path = []
+        
+        first_point = min(unvisited, key=lambda p: self.euclidean_distance(start_node, p))
+        path.append(first_point)
+        unvisited.remove(first_point)
+        current_point = first_point
+        
+        while unvisited:
+            next_point = min(unvisited, key=lambda p: self.euclidean_distance(current_point, p))
+            path.append(next_point)
+            unvisited.remove(next_point)
+            current_point = next_point
+            
+        return path
+
+    def plan_paths_for_points(self, points_to_cover: List[Tuple], num_drones: int, start_positions: List[Tuple], params: Optional[Dict] = None) -> List[List[Tuple]]:
+        """為一組給定的點進行 K-Means 分群和 TSP 路徑規劃。"""
         if not points_to_cover or num_drones == 0:
             return [[] for _ in range(num_drones)]
 
-        points_array = np.array([tuple(p) for p in points_to_cover])
-
-        # 根據起始點數量決定聚類方法
+        points_array = np.array(points_to_cover)
+        
+        # 1. 分配點集給無人機
         if len(start_positions) == 1:
-            # K-Means 聚類 (適用於初始規劃)
-            start_node = tuple(start_positions[0])
+            # 情況 A: 所有無人機從同一個點出發 (例如 GCS)，使用 K-Means
             if len(points_array) < num_drones:
-                clusters = [[p] for p in points_to_cover]
-                clusters.extend([[] for _ in range(num_drones - len(points_to_cover))])
+                clusters = [[tuple(p)] for p in points_array]
+                clusters.extend([[] for _ in range(num_drones - len(clusters))])
             else:
                 kmeans = KMeans(n_clusters=num_drones, random_state=42, n_init='auto').fit(points_array)
                 clusters = [[] for _ in range(num_drones)]
                 for i, label in enumerate(kmeans.labels_):
                     clusters[label].append(tuple(points_array[i]))
         else:
-            # 分配到最近的無人機 (適用於重規劃)
-            clusters = [[] for _ in range(num_drones)]
-            for point in points_to_cover:
-                distances = [self.euclidean_distance(point, pos) for pos in start_positions]
-                closest_drone_idx = np.argmin(distances)
-                clusters[closest_drone_idx].append(point)
+            # 情況 B: 無人機在不同的位置（重規劃），將點分配給最近的無人機
+            if num_drones != len(start_positions):
+                # 邊界情況處理：如果無人機和起點數量不匹配，則退回到 K-Means
+                clusters = [[] for _ in range(num_drones)]
+                if len(points_array) >= num_drones:
+                    kmeans = KMeans(n_clusters=num_drones, random_state=42, n_init='auto').fit(points_array)
+                    for i, label in enumerate(kmeans.labels_):
+                        clusters[label].append(tuple(points_array[i]))
+            else:
+                clusters = [[] for _ in range(num_drones)]
+                for point in points_to_cover:
+                    distances = [self.euclidean_distance(point, pos) for pos in start_positions]
+                    closest_drone_idx = np.argmin(distances)
+                    clusters[closest_drone_idx].append(point)
 
-        # 為每個聚類求解 TSP
+        # 2. 為每個無人機和其分配的點集，以其各自的起點規劃路徑
         new_trails = []
         for i in range(num_drones):
-            start_node = tuple(start_positions[0] if len(start_positions) == 1 else start_positions[i])
-            path, _, _, _, _ = self._solve_single_tsp_ga_improved(clusters[i], start_node)
-            final_path = [start_node] + [tuple(p) for p in path]
-            new_trails.append(final_path)
+            # 確定這架無人機的起點
+            start_node = start_positions[0] if len(start_positions) == 1 else start_positions[i]
+            
+            # 為它的點集求解 TSP
+            path, _ = self._solve_single_tsp_ga_improved(clusters[i], start_node, params)
+            
+            # 返回從其【真實起點】出發的路徑
+            new_trails.append([start_node] + path)
             
         return new_trails
 
-    def plan_paths(self):
-        """
-        原始的 plan_paths 方法，現在它內部呼叫新的核心規劃函式。
-        """
-        all_centers = [(x + 0.5, y + 0.5) for x in range(self.N) for y in range(self.N)]
-        self.trails = self.plan_paths_for_points(all_centers, self.K, GCS_POS)
-
 # ==============================================================================
-# ===== 混合策略 Planner =======================================================
+# ===== V4.2 策略的專屬 Planner (新增) =========================================
 # ==============================================================================
-class HybridGreedyPlanner(Planner):
-    def __init__(self, N, K, drone_speed=1.0):
+class V42Planner(Planner):
+    """
+    一個專門的 Planner 類，封裝了 V4.2 方法論的所有核心決策邏輯。
+    """
+    def __init__(self, N: int, K: int, drone_speed: float = 1.0):
         super().__init__(N, K, drone_speed)
-        self.strategy = "Hybrid Greedy"
+        self.strategy = "v4.2-adaptive"
+        # 聚合一個基礎路徑規劃器實例，專門用它來執行路徑規劃
+        self.path_planner = ImprovedKMeansGATSPPlanner(N, K, drone_speed)
+        # 緩存預測結果以提高性能
+        self.prediction_cache: Dict[Tuple, float] = {}
 
-    def _plan_contiguous_greedy(self):
-        condition = "N<K^2" if self.N < self.K**2 else "N>=K^2"
-        self.strategy = f"Hybrid ({condition} => Greedy)"
-        
-        N, N_d = self.N, self.K
-        W, T_final, assigned_width = [0]*N_d, [0.0]*N_d, 0
-        for m in range(N_d):
-            best_w_for_m, min_overall_max_t = 0, float('inf')
-            max_possible_w = N - assigned_width - (N_d - 1 - m)
-            if max_possible_w <= 0: continue
-            for w in range(1, max_possible_w + 1):
-                commute_dist = self.euclidean_distance(GCS_POS, (assigned_width + 0.5, 0.5))
-                work_dist = w * (N - 1) + (w - 1) if w > 0 else 0
-                t_m_hypothetical = commute_dist + work_dist
-                t_others_hypothetical = 0.0
-                if m < N_d - 1:
-                    rem_w = (N - assigned_width - w) / (N_d - 1 - m)
-                    rem_commute = self.euclidean_distance(GCS_POS, (assigned_width + w + 0.5, 0.5))
-                    rem_work = rem_w * (N - 1) + (rem_w - 1) if rem_w > 0 else 0
-                    t_others_hypothetical = rem_commute + rem_work
-                previous_max_t = max(T_final[:m]) if m > 0 else 0.0
-                current_max_t = max(previous_max_t, t_m_hypothetical, t_others_hypothetical)
-                if current_max_t < min_overall_max_t:
-                    min_overall_max_t, best_w_for_m = current_max_t, w
-            W[m] = best_w_for_m
-            commute_dist = self.euclidean_distance(GCS_POS, (assigned_width + 0.5, 0.5))
-            work_dist = W[m] * (N - 1) + (W[m] - 1) if W[m] > 0 else 0
-            T_final[m] = commute_dist + work_dist
-            assigned_width += W[m]
-        if N - sum(W) > 0: W[-1] += N - sum(W)
-        start_x = 0.0
-        for m in range(N_d):
-            width_m = W[m]
-            work_path = []
-            for w_offset in range(width_m):
-                current_x = start_x + w_offset + 0.5
-                if w_offset % 2 == 0: work_path.extend([(current_x, y + 0.5) for y in range(N)])
-                else: work_path.extend([(current_x, y + 0.5) for y in range(N - 1, -1, -1)])
-            if work_path:
-                self.trails[m] = [GCS_POS] + work_path + [GCS_POS]
-                work_len = sum(self.euclidean_distance(p1, p2) for p1, p2 in zip(work_path, work_path[1:]))
-                commute_len = self.euclidean_distance(GCS_POS, work_path[0])
-                go_work_len = commute_len + work_len
-                total_len = go_work_len + self.euclidean_distance(work_path[-1], GCS_POS)
-                self.individual_distances.append(total_len)
-                self.individual_work_distances.append(work_len)
-                self.individual_commute_distances.append(commute_len)
-                self.individual_go_work_distances.append(go_work_len)
-            start_x += width_m
+    def plan_initial_paths(self, points_to_cover: List[Tuple]) -> List[List[Tuple]]:
+        """為初始階段規劃路徑，使用完整模式。"""
+        return self.path_planner.plan_paths_for_points(points_to_cover, self.K, [GCS_POS], params=None)
 
-    def _plan_interlaced_sweep(self):
-        self.strategy = f"Hybrid (N>={self.K**2} => Interlaced)"
-        clusters = [[] for _ in range(self.K)]
-        for col_idx in range(self.N): clusters[col_idx % self.K].append(col_idx)
-        for i in range(self.K):
-            cols = sorted(clusters[i])
-            if not cols: continue
-            work_path, last_pos = [], GCS_POS
-            for col in cols:
-                col_x = col + 0.5
-                top_point, bottom_point = (col_x, self.N - 0.5), (col_x, 0.5)
-                if self.euclidean_distance(last_pos, bottom_point) < self.euclidean_distance(last_pos, top_point):
-                    sweep = [(col_x, y + 0.5) for y in range(self.N)]
-                else:
-                    sweep = [(col_x, y + 0.5) for y in range(self.N - 1, -1, -1)]
-                work_path.extend(sweep)
-                last_pos = work_path[-1]
-            if work_path:
-                self.trails[i] = [GCS_POS] + work_path + [GCS_POS]
-                work_len = sum(self.euclidean_distance(p1, p2) for p1, p2 in zip(work_path, work_path[1:]))
-                commute_len = self.euclidean_distance(GCS_POS, work_path[0])
-                go_work_len = commute_len + work_len
-                total_len = go_work_len + self.euclidean_distance(work_path[-1], GCS_POS)
-                self.individual_distances.append(total_len)
-                self.individual_work_distances.append(work_len)
-                self.individual_commute_distances.append(commute_len)
-                self.individual_go_work_distances.append(go_work_len)
+    def solve_bap(self, agents_pos: List[Tuple], tasks_pos: List[Tuple]) -> Tuple[float, Optional[List[Tuple[int, int]]]]:
+        """
+        瓶頸指派問題 (BAP) 求解器。
+        返回: (最小的瓶頸距離, 對應的一個分配方案的索引對)
+        """
+        if not tasks_pos or not agents_pos:
+            return 0.0, []
 
-    def plan_paths(self):
-        if self.N >= self.K**2: self._plan_interlaced_sweep()
-        else: self._plan_contiguous_greedy()
+        num_agents = len(agents_pos)
+        num_tasks = len(tasks_pos)
 
-# ==============================================================================
-# ===== 適應性混合 Planner (2-Opt) =============================================
-# ==============================================================================
-class AdaptiveHybridPlanner(Planner):
-    def __init__(self, N, K, drone_speed=1.0):
-        super().__init__(N, K, drone_speed)
-        self.strategy = "Adaptive Hybrid (2-Opt Only)"
+        if num_agents < num_tasks:
+            return float('inf'), None
 
-    def _greedy_initial_path(self, points, start_node):
-        if not points: return []
-        unvisited = list(points)
-        first_point = min(unvisited, key=lambda p: self.euclidean_distance(start_node, p))
-        unvisited.remove(first_point)
-        path = [first_point]
-        current_point = first_point
-        while unvisited:
-            next_point = min(unvisited, key=lambda p: self.euclidean_distance(current_point, p))
-            unvisited.remove(next_point)
-            path.append(next_point)
-            current_point = next_point
-        return path
+        cost_matrix = np.array([[self.euclidean_distance(a, t) for t in tasks_pos] for a in agents_pos])
 
-    def _solve_tsp_2opt(self, points, start_node):
-        if not points: return [], 0.0, 0.0, 0.0, 0.0
-        
-        path = self._greedy_initial_path(points, start_node)
-        if len(path) < 2:
-            work_len = 0.0
-            commute_len = self.euclidean_distance(start_node, path[0]) if path else 0.0
-            go_work_len = commute_len
-            total_len = commute_len + self.euclidean_distance(path[0], start_node) if path else 0.0
-            return path, total_len, work_len, commute_len, go_work_len
+        d_low = 0.0
+        d_high = np.max(cost_matrix) if cost_matrix.size > 0 else 0.0
+        best_assignment_indices = None
+        min_bottleneck = d_high
 
-        improved = True
-        while improved:
-            improved = False
-            for i in range(len(path) - 1):
-                for j in range(i + 2, len(path)):
-                    if j < len(path) - 1:
-                        current_dist = self.euclidean_distance(path[i], path[i+1]) + self.euclidean_distance(path[j], path[j+1])
-                        new_dist = self.euclidean_distance(path[i], path[j]) + self.euclidean_distance(path[i+1], path[j+1])
-                        if new_dist < current_dist:
-                            path[i+1:j+1] = path[i+1:j+1][::-1]
-                            improved = True
-        
-        work_len = sum(self.euclidean_distance(path[k], path[k+1]) for k in range(len(path) - 1))
-        commute_len = self.euclidean_distance(start_node, path[0])
-        go_work_len = commute_len + work_len
-        total_len = go_work_len + self.euclidean_distance(path[-1], start_node)
-        return path, total_len, work_len, commute_len, go_work_len
-
-    def plan_paths(self):
-        initial_planner = HybridGreedyPlanner(self.N, self.K, self.drone_speed)
-        initial_planner._plan_contiguous_greedy()
-        assignments = [trail[1:-1] for trail in initial_planner.trails if len(trail) > 2]
-        if len(assignments) < self.K:
-            assignments.extend([[] for _ in range(self.K - len(assignments))])
-
-        for _ in range(self.N * self.K):
-            loads = [self._solve_tsp_2opt(assign, GCS_POS)[4] for assign in assignments]
-            if not any(loads): break
-            max_idx, min_idx = np.argmax(loads), np.argmin(loads)
-            if max_idx == min_idx or (loads[max_idx] - loads[min_idx]) / (loads[max_idx] + 1e-9) < 0.05: break
+        # 二分搜尋尋找最小的瓶頸距離
+        while (d_high - d_low > 0.01):
+            d_guess = (d_low + d_high) / 2
             
-            max_assign = assignments[max_idx]
-            if not max_assign: continue
-
-            max_cols = {p[0] for p in max_assign}
-            if not max_cols: continue
+            # 構建判定矩陣：成本 <= d_guess 的邊為 True
+            adj_matrix = cost_matrix[:, :num_tasks] <= d_guess
             
-            boundary_col_x = min(max_cols) if min_idx < max_idx else max(max_cols)
-            boundary_cells = sorted([p for p in max_assign if p[0] == boundary_col_x], key=lambda p: p[1])
-            if not boundary_cells: continue
+            # 轉換為匈牙利算法的成本矩陣 (True->0, False->1)
+            check_cost_matrix = 1 - adj_matrix.astype(int)
             
-            cells_to_move = boundary_cells[:len(boundary_cells) // 2]
-            if not cells_to_move: continue
-
-            new_max_assign = [p for p in max_assign if p not in cells_to_move]
-            new_min_assign = assignments[min_idx] + cells_to_move
-            if not new_max_assign: continue
-
-            new_load_max = self._solve_tsp_2opt(new_max_assign, GCS_POS)[4]
-            new_load_min = self._solve_tsp_2opt(new_min_assign, GCS_POS)[4]
+            row_ind, col_ind = linear_sum_assignment(check_cost_matrix)
+            total_match_cost = check_cost_matrix[row_ind, col_ind].sum()
             
-            if max(new_load_max, new_load_min) < loads[max_idx]:
-                assignments[max_idx] = new_max_assign
-                assignments[min_idx] = new_min_assign
+            # 檢查是否找到了能覆蓋所有 n 個任務的、成本為 0 的完美匹配
+            if len(col_ind) == num_tasks and total_match_cost == 0:
+                min_bottleneck = d_guess
+                d_high = d_guess
+                best_assignment_indices = list(zip(row_ind, col_ind))
             else:
-                break
+                d_low = d_guess
         
-        for i in range(self.K):
-            if assignments[i]:
-                final_path, total_len, work_len, commute_len, go_work_len = self._solve_tsp_2opt(assignments[i], GCS_POS)
-                self.trails[i] = [GCS_POS] + final_path + [GCS_POS]
-                self.individual_distances.append(total_len)
-                self.individual_work_distances.append(work_len)
-                self.individual_commute_distances.append(commute_len)
-                self.individual_go_work_distances.append(go_work_len)
-            else:
-                self.trails[i] = []
-                self.individual_distances.append(0)
-                self.individual_work_distances.append(0)
-                self.individual_commute_distances.append(0)
-                self.individual_go_work_distances.append(0)
+        return min_bottleneck, best_assignment_indices
+
+    def predict_search_time(self, uncovered_grids: List[Tuple], num_drones: int) -> float:
+        """使用【完整模式】的規劃器預測搜索時間，並使用緩存。"""
+        if not uncovered_grids or num_drones == 0:
+            return 0.0
+
+        # 將點列表排序後轉為元組，作為緩存的鍵，確保順序不影響緩存命中
+        cache_key = (tuple(sorted(uncovered_grids)), num_drones)
+        if cache_key in self.prediction_cache:
+            return self.prediction_cache[cache_key]
+
+        # 【新要求】使用完整模式 (params=None) 進行預測
+        planned_paths = self.path_planner.plan_paths_for_points(uncovered_grids, num_drones, [GCS_POS], params=None)
+        
+        max_path_length = 0.0
+        if planned_paths:
+            path_lengths = [sum(self.euclidean_distance(path[i], path[i+1]) for i in range(len(path) - 1)) for path in planned_paths if path]
+            if path_lengths:
+                max_path_length = max(path_lengths)
+
+        predicted_time = max_path_length / self.drone_speed
+        self.prediction_cache[cache_key] = predicted_time
+        return predicted_time
+
+    def evaluate_makespan(self, state: Dict[str, Any]) -> float:
+        """核心評估函式 E(S)_v4.2。"""
+        t_current = state['t_current']
+        drones = state['drones']
+        targets = state['targets']
+        
+        committed_finish_times = [d.estimated_finish_time for d in drones if d.status in ['deploying', 'holding']]
+        t_committed = max(committed_finish_times) if committed_finish_times else 0.0
+
+        covering_drones = [d for d in drones if d.status == 'covering']
+        unoccupied_targets = [t for t in targets if t['status'] == 'found_unoccupied']
+        
+        bap_bottleneck_dist, _ = self.solve_bap([d.pos for d in covering_drones], [t['pos'] for t in unoccupied_targets])
+        t_inevitable = t_current + (bap_bottleneck_dist / self.drone_speed)
+
+        t_max_deploy_total = max(t_committed, t_inevitable)
+
+        k_search = len(covering_drones)
+        uncovered_grids_list = list(state['all_grids'] - state['covered_grids'])
+
+        if k_search == 0 and uncovered_grids_list:
+            t_finish_search = float('inf')
+        else:
+            t_remaining_search = self.predict_search_time(uncovered_grids_list, k_search)
+            t_finish_search = t_current + t_remaining_search
+            
+        return max(t_max_deploy_total, t_finish_search)
+
+    def plan_paths_for_points(self, points_to_cover: list, num_drones: int, start_positions: list, params: Optional[Dict] = None) -> list:
+        raise NotImplementedError("V42Planner uses its internal path_planner for path generation.")
