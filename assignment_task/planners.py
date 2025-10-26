@@ -1,3 +1,5 @@
+# planners.py
+
 import numpy as np
 import random
 import math
@@ -155,19 +157,29 @@ class ImprovedKMeansGATSPPlanner(Planner):
 
             kmeans = KMeans(n_clusters=num_drones, init=initial_centroids, n_init=1, random_state=42).fit(points_array)
             
-            # 由於 K-Means 標籤不一定對應 start_positions 的順序，我們需要重新匹配
+            # --- 修正 START: K-Means 重規劃時的匹配邏輯 ---
+            # 原先的 zip 寫法依賴於 linear_sum_assignment 返回的 row_ind 是有序的，這是不健壯的。
+            # 改用字典 mapping 來明確地建立 "無人機索引" 到 "集群索引" 的映射，更清晰且健壯。
+            
             # 將 K-Means 生成的中心點與無人機的真實起始點進行最優匹配
             cost_matrix = np.array([[self.euclidean_distance(start, center) for center in kmeans.cluster_centers_] for start in start_positions])
             start_indices, cluster_indices = linear_sum_assignment(cost_matrix)
             
-            # 根據匹配結果，將點集正確分配給對應的無人機
+            # 建立一個從 start_positions 索引到 K-Means 集群索引的映射
+            mapping = {start_idx: cluster_idx for start_idx, cluster_idx in zip(start_indices, cluster_indices)}
+            
+            # 根據 K-Means 的標籤，臨時存儲點集
             temp_clusters = [[] for _ in range(num_drones)]
             for i, label in enumerate(kmeans.labels_):
                 temp_clusters[label].append(tuple(points_array[i]))
 
+            # 使用映射關係，將正確的點集分配給對應的無人機
             clusters = [[] for _ in range(num_drones)]
-            for start_idx, cluster_idx in zip(start_indices, cluster_indices):
-                clusters[start_idx] = temp_clusters[cluster_idx]
+            for i in range(num_drones):
+                if i in mapping:
+                    assigned_cluster_idx = mapping[i]
+                    clusters[i] = temp_clusters[assigned_cluster_idx]
+            # --- 修正 END ---
 
         # 為每個無人機和其分配的點集，以其各自的起點規劃路徑
         new_trails = []
@@ -219,15 +231,11 @@ class V42Planner(Planner):
         return min_bottleneck, best_assignment_indices
 
     def predict_search_time(self, uncovered_grids: List[Tuple], start_positions: List[Tuple]) -> float:
-        """
-        【已修正】使用無人機的真實起始位置來預測搜索時間。
-        注意：為了保證預測的準確性，暫時移除了基於位置的緩存。
-        """
+
         num_drones = len(start_positions)
         if not uncovered_grids or num_drones == 0:
             return 0.0
 
-        # --- 舊的緩存邏輯已移除，因為 start_positions 是高度動態的 ---
 
         # 【核心修正】使用傳入的真實 start_positions 進行規劃預測
         planned_paths = self.path_planner.plan_paths_for_points(

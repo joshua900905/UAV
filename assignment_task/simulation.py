@@ -36,7 +36,11 @@ class Drone:
             self.segment_index = 0
         else:
             if self.path_segments and self.segment_index < len(self.path_segments):
-                self.path_segments[self.segment_index] = self.path_segments[self.segment_index][:self.path_index]
+                # 安全地截斷路徑
+                current_path_len = len(self.path_segments[self.segment_index])
+                slice_index = min(self.path_index, current_path_len)
+                self.path_segments[self.segment_index] = self.path_segments[self.segment_index][:slice_index]
+
             self.path_segments.append(full_segment)
             self.segment_index = len(self.path_segments) - 1
         self.path_index = 1
@@ -47,7 +51,11 @@ class Drone:
         self.assigned_target_id = target['id']
         dist = math.sqrt((self.pos[0] - target['pos'][0])**2 + (self.pos[1] - target['pos'][1])**2)
         if self.path_segments and self.segment_index < len(self.path_segments):
-             self.path_segments[self.segment_index] = self.path_segments[self.segment_index][:self.path_index]
+             # 安全地截斷路徑
+            current_path_len = len(self.path_segments[self.segment_index])
+            slice_index = min(self.path_index, current_path_len)
+            self.path_segments[self.segment_index] = self.path_segments[self.segment_index][:slice_index]
+
         if dist < 1e-9:
             self.status = 'holding'
             self.estimated_finish_time = current_time
@@ -67,37 +75,57 @@ class Drone:
         
     def update_position(self, time_step: float, speed: float):
         if self.status in ['idle', 'holding', 'finished']: return
+        
         if not self.path_segments or self.segment_index >= len(self.path_segments):
             self.status = 'finished'
             return
+            
         current_path = self.path_segments[self.segment_index]
+        
         if self.path_index >= len(current_path):
             if self.segment_index < len(self.path_segments) - 1:
                 self.segment_index += 1
                 self.path_index = 1
                 if not self.path_segments[self.segment_index]: return
             else:
+                # 即使在這裡，狀態也應在到達時立即更新，此處作為備用保護
                 if self.status == 'deploying': self.status = 'holding'
                 else: self.status = 'finished'
                 return
+
         current_path = self.path_segments[self.segment_index]
         if self.path_index >= len(current_path): return
+
         target_waypoint = current_path[self.path_index]
         dist = math.sqrt((target_waypoint[0]-self.pos[0])**2 + (target_waypoint[1]-self.pos[1])**2)
+        
         if dist < 1e-9:
             self.path_index += 1
             return
+
         travel_dist = speed * time_step
+        
         if travel_dist >= dist:
             self.pos = target_waypoint
             self.flight_distance += dist
             self.path_index += 1
+            
+            # --- 修正 START: 狀態轉換漏洞 ---
+            # 在路徑索引遞增後立即檢查是否到達終點，並立刻更新狀態
+            # 這修復了狀態更新會延遲一個時間步的 bug
+            if self.path_index >= len(current_path):
+                if self.status == 'deploying':
+                    self.status = 'holding'
+                else: # 'covering' 狀態下完成一個路徑段
+                    self.status = 'finished' 
+            # --- 修正 END ---
+
         else:
             vec = (target_waypoint[0] - self.pos[0], target_waypoint[1] - self.pos[1])
             self.pos = (self.pos[0] + vec[0]/dist*travel_dist, self.pos[1] + vec[1]/dist*travel_dist)
             self.flight_distance += travel_dist
-        if self.path_index >= len(current_path):
-            if self.status == 'deploying': self.status = 'holding'
+        
+        # 移除了原先在此處的延遲狀態更新邏輯
 
 # ==============================================================================
 # ===== 交互式模擬器 (InteractiveSimulation Class) ============================
@@ -141,9 +169,12 @@ class InteractiveSimulation:
             'covered_grids': self.covered_grids,
         }
         
-    def _update_coverage_and_discoveries(self) -> Set[Tuple]:
-        """更新已覆蓋區域並返回新發現的目標【位置】集合。"""
-        newly_found_pos = set()
+    def _update_coverage_and_discoveries(self) -> bool:
+        """
+        【已修正 問題1】更新已覆蓋區域，並在發現新目標時立即更新其狀態。
+        返回一個布林值，表示此時間步是否有新目標被發現。
+        """
+        found_new_target_this_step = False
         for drone in self.drones:
             if drone.status == 'covering':
                 grid = (math.floor(drone.pos[0]) + 0.5, math.floor(drone.pos[1]) + 0.5)
@@ -151,9 +182,11 @@ class InteractiveSimulation:
                     self.covered_grids.add(grid)
                     for target in self.targets:
                         if target['pos'] == grid and target['status'] == 'unknown':
-                            newly_found_pos.add(grid)
+                            # 【核心修正】發現後，立即更新狀態，確保原子性
+                            target['status'] = 'found_unoccupied'
+                            found_new_target_this_step = True
                             print(f"Time {self.simulation_time:.2f}s: Drone {drone.id} discovered target {target['id']} at {grid}")
-        return newly_found_pos
+        return found_new_target_this_step
     
     # --------------------------------------------------------------------------
     # ---- 策略實現 (Strategy Implementation) -----------------------------------
@@ -161,19 +194,24 @@ class InteractiveSimulation:
 
     def _run_strategy_greedy_dynamic(self, newly_found_pos: Set[Tuple]):
         """
-        【已還原】當發現新目標時，使用標準匈牙利算法 (最小化總和)
-        來進行指派，目標是讓本次指派的總飛行距離最短。
+        【附帶修正】當發現新目標時，使用標準匈牙利算法 (最小化總和)。
+        現在直接從 self.targets 讀取狀態，而不是依賴傳入的參數。
         """
-        print(f" -> GREEDY-DYNAMIC (Minimize Sum): Re-planning triggered by {len(newly_found_pos)} new target(s).")
-        newly_found_targets = [t for t in self.targets if t['pos'] in newly_found_pos and t['status'] == 'found_unoccupied']
+        # 直接從系統狀態中查找新發現的、未被佔領的目標
+        newly_found_targets = [t for t in self.targets if t['status'] == 'found_unoccupied']
+        
         if not newly_found_targets: return
+        print(f" -> GREEDY-DYNAMIC (Minimize Sum): Re-planning triggered for {len(newly_found_targets)} new target(s).")
+
         covering_drones = [d for d in self.drones if d.status == 'covering']
         if not covering_drones: return
+
         planner_instance = self.planner.path_planner if isinstance(self.planner, V42Planner) else self.planner
         assignment_indices = planner_instance.solve_hungarian_assignment(
             [d.pos for d in covering_drones], [t['pos'] for t in newly_found_targets]
         )
         if not assignment_indices: return
+        
         valid_assignments = [p for p in assignment_indices if p[0] < len(covering_drones) and p[1] < len(newly_found_targets)]
         for drone_idx, target_idx in valid_assignments:
             drone = covering_drones[drone_idx]
@@ -181,26 +219,34 @@ class InteractiveSimulation:
             drone.deploy_to_target(target, self.simulation_time, self.drone_speed)
             target['status'] = 'occupied'
             print(f" --> Min-Sum Assignment: Drone {drone.id} to Target {target['id']}.")
+        
         self._replan_for_remaining_drones()
 
     def _run_v42_decision_flow(self):
         """
-        【最終升級：帶效用剪枝的瓶頸分配】
+        【已修正 問題3】
         逐個審查由BAP提出的瓶頸最優方案，只有在效用為正時才接受並執行。
-        【日誌增強】記錄詳細的決策過程。
+        當提案被接受時，同步更新 baseline_components 以確保日誌準確性。
         """
         if not isinstance(self.planner, V42Planner): 
             print("Error: This strategy requires a V42Planner instance.")
             return
-        current_state = self._get_current_state()
-        unoccupied_targets = [t for t in current_state['targets'] if t['status'] == 'found_unoccupied']
+        
+        unoccupied_targets = [t for t in self.targets if t['status'] == 'found_unoccupied']
         if not unoccupied_targets: return
-        covering_drones = [d for d in current_state['drones'] if d.status == 'covering']
-        if not covering_drones: return
+        
+        covering_drones_real = [d for d in self.drones if d.status == 'covering']
+        if not covering_drones_real: return
+        
         print(f" -> V42-ADAPTIVE (Pruned BAP): Evaluating BAP proposal for {len(unoccupied_targets)} target(s).")
-        self.planner.prediction_cache.clear()
+        
+        # 清除快取以反映最新狀態（如果 planner 使用快取）
+        if hasattr(self.planner, 'prediction_cache'):
+            self.planner.prediction_cache.clear()
+
+        # 使用真實無人機的當前狀態進行 BAP 提案
         _, assignment_indices = self.planner.solve_bap(
-            [d.pos for d in covering_drones], [t['pos'] for t in unoccupied_targets]
+            [d.pos for d in covering_drones_real], [t['pos'] for t in unoccupied_targets]
         )
         if not assignment_indices:
             print(" --> BAP found no possible actions to evaluate.")
@@ -208,8 +254,8 @@ class InteractiveSimulation:
         
         bap_proposal = []
         for drone_idx, target_idx in assignment_indices:
-            if drone_idx < len(covering_drones) and target_idx < len(unoccupied_targets):
-                drone = covering_drones[drone_idx]
+            if drone_idx < len(covering_drones_real) and target_idx < len(unoccupied_targets):
+                drone = covering_drones_real[drone_idx]
                 target = unoccupied_targets[target_idx]
                 dist = self.planner.euclidean_distance(drone.pos, target['pos'])
                 bap_proposal.append({'drone_id': drone.id, 'target_id': target['id'], 'distance': dist})
@@ -219,11 +265,11 @@ class InteractiveSimulation:
         assignments_to_execute = []
         decision_state = self._get_current_state() 
 
-        # --- 記錄 Baseline 狀態 ---
+        # --- 記錄初始 Baseline 狀態 ---
         makespan_baseline, baseline_components = self.planner.evaluate_makespan(decision_state, return_components=True)
         
         for proposal_item in sorted_proposal:
-            utility_threshold = 0.02 * makespan_baseline
+            utility_threshold = 0.02 * makespan_baseline # 保持您修改後的 threshold
             
             s_next = copy.deepcopy(decision_state)
             drone_in_sim = next(d for d in s_next['drones'] if d.id == proposal_item['drone_id'])
@@ -255,18 +301,26 @@ class InteractiveSimulation:
                 print(f" ----> ACCEPTED. Utility ({actual_utility:.2f}) > Threshold ({utility_threshold:.2f}).")
                 assignments_to_execute.append(proposal_item)
                 decision_state = s_next # 更新決策狀態以評估下一個提案
-                makespan_baseline = makespan_after_action # 新的 baseline 是接受上一個動作後的狀態
+                
+                # 【核心修正 問題3】重新計算 baseline 和 components，確保日誌數據同步
+                makespan_baseline, baseline_components = self.planner.evaluate_makespan(decision_state, return_components=True)
             else:
                 print(f" ----> REJECTED. Utility ({actual_utility:.2f}) <= Threshold ({utility_threshold:.2f}).")
         
         if assignments_to_execute:
             print(f" --> Executing {len(assignments_to_execute)} accepted assignment(s) from the BAP proposal.")
+            # 必須在執行前將所有新發現的目標標記為 'occupied'
+            # 這樣重規劃時才知道這些目標點不需要再被搜索
+            for item in assignments_to_execute:
+                target = next(t for t in self.targets if t['id'] == item['target_id'])
+                target['status'] = 'occupied'
+
             for item in assignments_to_execute:
                 drone = next(d for d in self.drones if d.id == item['drone_id'])
                 target = next(t for t in self.targets if t['id'] == item['target_id'])
                 drone.deploy_to_target(target, self.simulation_time, self.drone_speed)
-                target['status'] = 'occupied'
-                print(f" --> Min-Sum Assignment: Drone {drone.id} to Target {target['id']}.")
+                print(f" --> Assignment Executed: Drone {drone.id} to Target {target['id']}.")
+
             self._replan_for_remaining_drones()
         else:
             print(" --> No part of the BAP proposal was deemed beneficial. Continuing search.")
@@ -277,12 +331,19 @@ class InteractiveSimulation:
         if not remaining_search_drones:
             print(" --> No remaining drones to continue searching.")
             return
+        
+        # 重規劃時，未覆蓋的點也應排除已找到但未佔領的目標點
         uncovered_points = list(self.all_grid_centers - self.covered_grids)
+        # 確保不會去重新搜索那些已經找到但只是暫時無人機可派的目標
+        found_but_unoccupied_pos = {t['pos'] for t in self.targets if t['status'] == 'found_unoccupied'}
+        uncovered_points = [p for p in uncovered_points if p not in found_but_unoccupied_pos]
+
         if not uncovered_points:
-            print(" --> No uncovered area left. Stopping remaining search drones.")
+            print(" --> No uncovered area left to search. Stopping remaining search drones.")
             for drone in remaining_search_drones:
                 drone.stop()
             return
+        
         print(f" --> Replanning for {len(remaining_search_drones)} remaining search drone(s)...")
         start_positions = [d.pos for d in remaining_search_drones]
         planner_instance = self.planner.path_planner if isinstance(self.planner, V42Planner) else self.planner
@@ -342,22 +403,17 @@ class InteractiveSimulation:
             for drone in self.drones:
                 drone.update_position(time_step, self.drone_speed)
 
-            newly_found_pos = self._update_coverage_and_discoveries()
+            # 【核心修正 問題1】現在直接接收布林結果
+            found_new_target_this_step = self._update_coverage_and_discoveries()
             
-            if newly_found_pos:
-                found_new_target_this_step = False
-                for t in self.targets:
-                    if t['pos'] in newly_found_pos and t['status'] == 'unknown':
-                        t['status'] = 'found_unoccupied'
-                        found_new_target_this_step = True
-                
-                if found_new_target_this_step:
-                    if self.strategy == 'greedy-dynamic':
-                        self._run_strategy_greedy_dynamic(newly_found_pos)
-                    elif self.strategy == 'v4.2-adaptive':
-                        self._run_v42_decision_flow()
-                    elif self.strategy == 'phased-hungarian':
-                        pass # 故意留空，此策略在發現階段不做反應
+            # 【核心修正 問題1】整個舊的 if newly_found_pos 區塊被簡化
+            if found_new_target_this_step:
+                if self.strategy == 'greedy-dynamic':
+                    self._run_strategy_greedy_dynamic(set()) 
+                elif self.strategy == 'v4.2-adaptive':
+                    self._run_v42_decision_flow()
+                elif self.strategy == 'phased-hungarian':
+                    pass # 此策略在發現階段不做反應
             
             if phase == 'discovery':
                 found_targets_count = sum(1 for t in self.targets if t['status'] != 'unknown')
