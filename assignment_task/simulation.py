@@ -5,6 +5,7 @@ import random
 import numpy as np
 import copy
 from typing import List, Tuple, Set, Dict, Any, Union, Optional
+import copy
 
 # 從 planners 導入所有需要的組件
 from planners import GCS_POS, DRONE_SPEED, Planner, ImprovedKMeansGATSPPlanner, V42Planner
@@ -186,6 +187,7 @@ class InteractiveSimulation:
         """
         【最終升級：帶效用剪枝的瓶頸分配】
         逐個審查由BAP提出的瓶頸最優方案，只有在效用為正時才接受並執行。
+        【日誌增強】記錄詳細的決策過程。
         """
         if not isinstance(self.planner, V42Planner): 
             print("Error: This strategy requires a V42Planner instance.")
@@ -203,35 +205,60 @@ class InteractiveSimulation:
         if not assignment_indices:
             print(" --> BAP found no possible actions to evaluate.")
             return
+        
         bap_proposal = []
         for drone_idx, target_idx in assignment_indices:
             if drone_idx < len(covering_drones) and target_idx < len(unoccupied_targets):
-                drone, target = covering_drones[drone_idx], unoccupied_targets[target_idx]
+                drone = covering_drones[drone_idx]
+                target = unoccupied_targets[target_idx]
                 dist = self.planner.euclidean_distance(drone.pos, target['pos'])
                 bap_proposal.append({'drone_id': drone.id, 'target_id': target['id'], 'distance': dist})
+
         sorted_proposal = sorted(bap_proposal, key=lambda x: x['distance'], reverse=True)
+        
         assignments_to_execute = []
         decision_state = self._get_current_state() 
+
+        # --- 記錄 Baseline 狀態 ---
+        makespan_baseline, baseline_components = self.planner.evaluate_makespan(decision_state, return_components=True)
+        
         for proposal_item in sorted_proposal:
-            makespan_baseline = self.planner.evaluate_makespan(decision_state)
-            utility_threshold = 0.05 * makespan_baseline
+            utility_threshold = 0.02 * makespan_baseline
+            
             s_next = copy.deepcopy(decision_state)
             drone_in_sim = next(d for d in s_next['drones'] if d.id == proposal_item['drone_id'])
             target_in_sim = next(t for t in s_next['targets'] if t['id'] == proposal_item['target_id'])
+            
             drone_in_sim.status = 'deploying'
             drone_in_sim.estimated_finish_time = s_next['t_current'] + proposal_item['distance'] / self.drone_speed
             target_in_sim['status'] = 'occupied'
-            makespan_after_action = self.planner.evaluate_makespan(s_next)
+            
+            makespan_after_action, after_action_components = self.planner.evaluate_makespan(s_next, return_components=True)
             actual_utility = makespan_baseline - makespan_after_action
+
+            # --- 記錄每一次評估的詳細日誌 ---
+            log_entry = {
+                'time': self.simulation_time,
+                'proposal': f"D{proposal_item['drone_id']}->T{proposal_item['target_id']}",
+                'baseline': baseline_components,
+                'after_action': after_action_components,
+                'utility': actual_utility,
+                'threshold': utility_threshold,
+                'decision': 'accept' if actual_utility > utility_threshold else 'reject'
+            }
+            self.planner.decision_log.append(log_entry)
+
             print(f" --> Evaluating proposal (D{proposal_item['drone_id']}->T{proposal_item['target_id']}): "
                   f"Baseline={makespan_baseline:.2f}s, After={makespan_after_action:.2f}s, Utility={actual_utility:.2f}s")
+
             if actual_utility > utility_threshold:
-                print(f" ----> ACCEPTED. Utility exceeds threshold.")
+                print(f" ----> ACCEPTED. Utility ({actual_utility:.2f}) > Threshold ({utility_threshold:.2f}).")
                 assignments_to_execute.append(proposal_item)
-                decision_state = s_next
+                decision_state = s_next # 更新決策狀態以評估下一個提案
+                makespan_baseline = makespan_after_action # 新的 baseline 是接受上一個動作後的狀態
             else:
-                print(f" ----> REJECTED. Utility is below threshold. Pruning remaining proposals.")
-                break
+                print(f" ----> REJECTED. Utility ({actual_utility:.2f}) <= Threshold ({utility_threshold:.2f}).")
+        
         if assignments_to_execute:
             print(f" --> Executing {len(assignments_to_execute)} accepted assignment(s) from the BAP proposal.")
             for item in assignments_to_execute:
@@ -239,7 +266,7 @@ class InteractiveSimulation:
                 target = next(t for t in self.targets if t['id'] == item['target_id'])
                 drone.deploy_to_target(target, self.simulation_time, self.drone_speed)
                 target['status'] = 'occupied'
-                print(f" --> Final Assignment: Drone {drone.id} to Target {target['id']}.")
+                print(f" --> Min-Sum Assignment: Drone {drone.id} to Target {target['id']}.")
             self._replan_for_remaining_drones()
         else:
             print(" --> No part of the BAP proposal was deemed beneficial. Continuing search.")

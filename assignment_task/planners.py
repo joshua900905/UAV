@@ -1,12 +1,10 @@
-# planners.py
-
 import numpy as np
 import random
 import math
 from abc import ABC, abstractmethod
 from sklearn.cluster import KMeans
 from scipy.optimize import linear_sum_assignment
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 
 # --- 全局常量 ---
 GCS_POS = (0.5, 0.5)
@@ -190,6 +188,7 @@ class V42Planner(Planner):
         self.strategy = "v4.2-adaptive"
         self.path_planner = ImprovedKMeansGATSPPlanner(N, K, drone_speed)
         self.prediction_cache: Dict[Tuple, float] = {}
+        self.decision_log: List[Dict[str, Any]] = [] # <--- 新增日誌容器
 
     def plan_initial_paths(self, points_to_cover: List[Tuple]) -> List[List[Tuple]]:
         """為初始階段規劃路徑，使用完整模式。"""
@@ -219,40 +218,93 @@ class V42Planner(Planner):
                 d_low = d_guess
         return min_bottleneck, best_assignment_indices
 
-    def predict_search_time(self, uncovered_grids: List[Tuple], num_drones: int) -> float:
-        """使用【完整模式】的規劃器預測搜索時間，並使用緩存。"""
+    def predict_search_time(self, uncovered_grids: List[Tuple], start_positions: List[Tuple]) -> float:
+        """
+        【已修正】使用無人機的真實起始位置來預測搜索時間。
+        注意：為了保證預測的準確性，暫時移除了基於位置的緩存。
+        """
+        num_drones = len(start_positions)
         if not uncovered_grids or num_drones == 0:
             return 0.0
-        cache_key = (tuple(sorted(uncovered_grids)), num_drones)
-        if cache_key in self.prediction_cache:
-            return self.prediction_cache[cache_key]
-        planned_paths = self.path_planner.plan_paths_for_points(uncovered_grids, num_drones, [GCS_POS], params=None)
+
+        # --- 舊的緩存邏輯已移除，因為 start_positions 是高度動態的 ---
+
+        # 【核心修正】使用傳入的真實 start_positions 進行規劃預測
+        planned_paths = self.path_planner.plan_paths_for_points(
+            uncovered_grids,
+            num_drones,
+            start_positions,  # <-- 使用真實位置
+            params=None
+        )
+
         max_path_length = 0.0
         if planned_paths:
-            path_lengths = [sum(self.euclidean_distance(path[i], path[i+1]) for i in range(len(path) - 1)) for path in planned_paths if path]
+            path_lengths = []
+            for i, path in enumerate(planned_paths):
+                if not path or len(path) < 2: continue
+                # plan_paths_for_points 返回的路徑已經包含了起點，所以直接計算即可
+                length = sum(self.euclidean_distance(path[j], path[j+1]) for j in range(len(path) - 1))
+                path_lengths.append(length)
+
             if path_lengths:
                 max_path_length = max(path_lengths)
+
         predicted_time = max_path_length / self.drone_speed
-        self.prediction_cache[cache_key] = predicted_time
+
         return predicted_time
 
-    def evaluate_makespan(self, state: Dict[str, Any]) -> float:
+    def evaluate_makespan(self, state: Dict[str, Any], return_components: bool = False) -> Union[float, Tuple[float, Dict]]:
+        """ 
+        【已修正】增加一個選項，使其可以返回 E(S) 的所有計算組件，並修正 t_finish_search 的預測邏輯。
+        """
         t_current, drones, targets = state['t_current'], state['drones'], state['targets']
         committed_finish_times = [d.estimated_finish_time for d in drones if d.status in ['deploying', 'holding']]
         t_committed = max(committed_finish_times) if committed_finish_times else 0.0
+        
         covering_drones = [d for d in drones if d.status == 'covering']
         unoccupied_targets = [t for t in targets if t['status'] == 'found_unoccupied']
+        
         bap_bottleneck_dist, _ = self.solve_bap([d.pos for d in covering_drones], [t['pos'] for t in unoccupied_targets])
-        t_inevitable = t_current + (bap_bottleneck_dist / self.drone_speed)
+        t_inevitable = t_current + (bap_bottleneck_dist / self.drone_speed) if bap_bottleneck_dist is not None and bap_bottleneck_dist != float('inf') else t_current
+
         t_max_deploy_total = max(t_committed, t_inevitable)
-        k_search = len(covering_drones)
+        
         uncovered_grids_list = list(state['all_grids'] - state['covered_grids'])
-        if k_search == 0 and uncovered_grids_list:
+        
+        t_remaining_search = 0.0
+        # 【核心修正】更新 t_finish_search 的計算邏輯，使其更準確
+        if not covering_drones and uncovered_grids_list:
+            # 有東西要搜，但沒有無人機
             t_finish_search = float('inf')
+        elif not uncovered_grids_list:
+            # 沒東西要搜了
+            t_finish_search = t_current
         else:
-            t_remaining_search = self.predict_search_time(uncovered_grids_list, k_search)
+            # 收集正在搜索的無人機的實時位置
+            search_drone_positions = [d.pos for d in covering_drones]
+            
+            # 使用新的呼叫方式，傳遞真實位置列表
+            t_remaining_search = self.predict_search_time(uncovered_grids_list, search_drone_positions)
             t_finish_search = t_current + t_remaining_search
-        return max(t_max_deploy_total, t_finish_search)
+            
+        makespan = max(t_max_deploy_total, t_finish_search)
+
+        if return_components:
+            components = {
+                'makespan': makespan,
+                't_current': t_current,
+                't_committed': t_committed,
+                't_inevitable': t_inevitable,
+                't_max_deploy_total': t_max_deploy_total,
+                'k_search': len(covering_drones),
+                'uncovered_count': len(uncovered_grids_list),
+                't_remaining_search': t_remaining_search,
+                't_finish_search': t_finish_search,
+                'bottleneck': 'search' if t_finish_search > t_max_deploy_total else 'deploy'
+            }
+            return makespan, components
+        
+        return makespan
 
     def plan_paths_for_points(self, points_to_cover: list, num_drones: int, start_positions: list, params: Optional[Dict] = None) -> list:
         raise NotImplementedError("V42Planner uses its internal path_planner for path generation.")

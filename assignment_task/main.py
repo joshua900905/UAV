@@ -7,6 +7,7 @@ import random
 import numpy as np
 import pandas as pd
 import traceback
+import json # <--- 導入 json 模組
 
 # 從我們的模組導入核心類別
 from planners import ImprovedKMeansGATSPPlanner, V42Planner
@@ -39,9 +40,10 @@ def main():
         PATH_PLOTS_DIR = os.path.join(BASE_OUTPUT_DIR, "path_plots")
         FINAL_STATE_DIR = os.path.join(BASE_OUTPUT_DIR, "final_states")
         ANALYSIS_DIR = os.path.join(BASE_OUTPUT_DIR, "analysis_reports")
+        LOGS_DIR = os.path.join(BASE_OUTPUT_DIR, "decision_logs") # <--- 新增日誌目錄
         
         # 確保所有輸出目錄都存在
-        for d in [PATH_PLOTS_DIR, FINAL_STATE_DIR, ANALYSIS_DIR]:
+        for d in [PATH_PLOTS_DIR, FINAL_STATE_DIR, ANALYSIS_DIR, LOGS_DIR]:
             os.makedirs(d, exist_ok=True)
 
         # ======================================================================
@@ -88,6 +90,13 @@ def main():
                     elapsed = time.time() - sim_start_time
                     print(f"  -> '{result['Strategy']}' finished in {elapsed:.2f}s. Makespan: {result['Makespan']:.2f}s")
                     
+                    # --- 【新增】保存 v4.2 策略的決策日誌 ---
+                    if strategy == 'v4.2-adaptive' and isinstance(planner, V42Planner):
+                        log_filename = os.path.join(LOGS_DIR, f"decision_log_{N}x{N}_K{k}.json")
+                        with open(log_filename, 'w') as f:
+                            json.dump(planner.decision_log, f, indent=2)
+                        print(f"  -> Decision log saved to: {log_filename}")
+
                     # 記錄結果
                     result['N'] = N
                     result['K'] = k
