@@ -1,0 +1,477 @@
+[
+  {
+    "time": 0.0,
+    "proposal": "D7->T2",
+    "baseline": {
+      "makespan": 1.3385164807134504,
+      "t_current": 0.0,
+      "t_committed": 0.0,
+      "t_inevitable": 0.04474660099696121,
+      "t_max_deploy_total": 0.04474660099696121,
+      "t_finish_search": 1.3385164807134504,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.3414213562373096,
+      "t_current": 0.0,
+      "t_committed": 0.04472135954999578,
+      "t_inevitable": 0.00078125,
+      "t_max_deploy_total": 0.04472135954999578,
+      "t_finish_search": 1.3414213562373096,
+      "bottleneck": "search"
+    },
+    "utility": -0.0029048755238592072,
+    "threshold": 0.02677032961426901,
+    "decision": "reject"
+  },
+  {
+    "time": 0.0,
+    "proposal": "D0->T1",
+    "baseline": {
+      "makespan": 1.3385164807134504,
+      "t_current": 0.0,
+      "t_committed": 0.0,
+      "t_inevitable": 0.04474660099696121,
+      "t_max_deploy_total": 0.04474660099696121,
+      "t_finish_search": 1.3385164807134504,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.2606812084928083,
+      "t_current": 0.0,
+      "t_committed": 0.0,
+      "t_inevitable": 0.0453125,
+      "t_max_deploy_total": 0.0453125,
+      "t_finish_search": 1.2606812084928083,
+      "bottleneck": "search"
+    },
+    "utility": 0.07783527222064213,
+    "threshold": 0.02677032961426901,
+    "decision": "accept"
+  },
+  {
+    "time": 0.1,
+    "proposal": "D10->T2",
+    "baseline": {
+      "makespan": 1.0919349550499537,
+      "t_current": 0.1,
+      "t_committed": 0.0,
+      "t_inevitable": 0.13204077602251546,
+      "t_max_deploy_total": 0.13204077602251546,
+      "t_finish_search": 1.0919349550499537,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.113959459939559,
+      "t_current": 0.1,
+      "t_committed": 0.13164515157219744,
+      "t_inevitable": 0.11933495104806967,
+      "t_max_deploy_total": 0.13164515157219744,
+      "t_finish_search": 1.113959459939559,
+      "bottleneck": "search"
+    },
+    "utility": -0.02202450488960528,
+    "threshold": 0.021838699100999077,
+    "decision": "reject"
+  },
+  {
+    "time": 0.1,
+    "proposal": "D2->T7",
+    "baseline": {
+      "makespan": 1.0919349550499537,
+      "t_current": 0.1,
+      "t_committed": 0.0,
+      "t_inevitable": 0.13204077602251546,
+      "t_max_deploy_total": 0.13204077602251546,
+      "t_finish_search": 1.0919349550499537,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.2812128676295147,
+      "t_current": 0.1,
+      "t_committed": 0.11925985225549866,
+      "t_inevitable": 0.13204077602251546,
+      "t_max_deploy_total": 0.13204077602251546,
+      "t_finish_search": 1.2812128676295147,
+      "bottleneck": "search"
+    },
+    "utility": -0.18927791257956095,
+    "threshold": 0.021838699100999077,
+    "decision": "reject"
+  },
+  {
+    "time": 0.2,
+    "proposal": "D9->T2",
+    "baseline": {
+      "makespan": 1.116227766016838,
+      "t_current": 0.2,
+      "t_committed": 0.0,
+      "t_inevitable": 0.3007019203889356,
+      "t_max_deploy_total": 0.3007019203889356,
+      "t_finish_search": 1.116227766016838,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.116227766016838,
+      "t_current": 0.2,
+      "t_committed": 0.30000000000000004,
+      "t_inevitable": 0.2126757662028031,
+      "t_max_deploy_total": 0.30000000000000004,
+      "t_finish_search": 1.116227766016838,
+      "bottleneck": "search"
+    },
+    "utility": 0.0,
+    "threshold": 0.02232455532033676,
+    "decision": "reject"
+  },
+  {
+    "time": 0.2,
+    "proposal": "D1->T9",
+    "baseline": {
+      "makespan": 1.116227766016838,
+      "t_current": 0.2,
+      "t_committed": 0.0,
+      "t_inevitable": 0.3007019203889356,
+      "t_max_deploy_total": 0.3007019203889356,
+      "t_finish_search": 1.116227766016838,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.116227766016838,
+      "t_current": 0.2,
+      "t_committed": 0.27174389352143014,
+      "t_inevitable": 0.3007019203889356,
+      "t_max_deploy_total": 0.3007019203889356,
+      "t_finish_search": 1.116227766016838,
+      "bottleneck": "search"
+    },
+    "utility": 0.0,
+    "threshold": 0.02232455532033676,
+    "decision": "reject"
+  },
+  {
+    "time": 0.2,
+    "proposal": "D2->T7",
+    "baseline": {
+      "makespan": 1.116227766016838,
+      "t_current": 0.2,
+      "t_committed": 0.0,
+      "t_inevitable": 0.3007019203889356,
+      "t_max_deploy_total": 0.3007019203889356,
+      "t_finish_search": 1.116227766016838,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.1151766734790247,
+      "t_current": 0.2,
+      "t_committed": 0.2,
+      "t_inevitable": 0.3004483661767484,
+      "t_max_deploy_total": 0.3004483661767484,
+      "t_finish_search": 1.1151766734790247,
+      "bottleneck": "search"
+    },
+    "utility": 0.0010510925378133251,
+    "threshold": 0.02232455532033676,
+    "decision": "reject"
+  },
+  {
+    "time": 0.30000000000000004,
+    "proposal": "D10->T2",
+    "baseline": {
+      "makespan": 1.3242640687119287,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.0,
+      "t_inevitable": 0.4415011767011586,
+      "t_max_deploy_total": 0.4415011767011586,
+      "t_finish_search": 1.3242640687119287,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.282842712474619,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.4004483661767484,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.282842712474619,
+      "bottleneck": "search"
+    },
+    "utility": 0.0414213562373098,
+    "threshold": 0.026485281374238574,
+    "decision": "accept"
+  },
+  {
+    "time": 0.30000000000000004,
+    "proposal": "D1->T9",
+    "baseline": {
+      "makespan": 1.3242640687119287,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.4004483661767484,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.3242640687119287,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.213462182658695,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.4004483661767484,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.213462182658695,
+      "bottleneck": "search"
+    },
+    "utility": 0.1108018860532336,
+    "threshold": 0.026485281374238574,
+    "decision": "accept"
+  },
+  {
+    "time": 0.30000000000000004,
+    "proposal": "D3->T5",
+    "baseline": {
+      "makespan": 1.184909451422786,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.4004483661767484,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.184909451422786,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.482842712474619,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.4004483661767484,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.482842712474619,
+      "bottleneck": "search"
+    },
+    "utility": -0.29793326105183304,
+    "threshold": 0.023698189028455722,
+    "decision": "reject"
+  },
+  {
+    "time": 0.30000000000000004,
+    "proposal": "D2->T7",
+    "baseline": {
+      "makespan": 1.184909451422786,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.4004483661767484,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.184909451422786,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.655900731610236,
+      "t_current": 0.30000000000000004,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.33168941550700776,
+      "t_max_deploy_total": 0.44142135623730955,
+      "t_finish_search": 1.655900731610236,
+      "bottleneck": "search"
+    },
+    "utility": -0.47099128018745007,
+    "threshold": 0.023698189028455722,
+    "decision": "reject"
+  },
+  {
+    "time": 0.7,
+    "proposal": "D2->T7",
+    "baseline": {
+      "makespan": 1.2999999999999998,
+      "t_current": 0.7,
+      "t_committed": 0.44142135623730955,
+      "t_inevitable": 0.9417115487700948,
+      "t_max_deploy_total": 0.9417115487700948,
+      "t_finish_search": 1.2999999999999998,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.2605551275463989,
+      "t_current": 0.7,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 0.9000627895974015,
+      "t_max_deploy_total": 0.9414213562373095,
+      "t_finish_search": 1.2605551275463989,
+      "bottleneck": "search"
+    },
+    "utility": 0.039444872453600954,
+    "threshold": 0.025999999999999995,
+    "decision": "accept"
+  },
+  {
+    "time": 0.7,
+    "proposal": "D11->T5",
+    "baseline": {
+      "makespan": 1.2605551275463989,
+      "t_current": 0.7,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 0.9000627895974015,
+      "t_max_deploy_total": 0.9414213562373095,
+      "t_finish_search": 1.2605551275463989,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.5,
+      "t_current": 0.7,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 0.7007437278423695,
+      "t_max_deploy_total": 0.9414213562373095,
+      "t_finish_search": 1.5,
+      "bottleneck": "search"
+    },
+    "utility": -0.23944487245360113,
+    "threshold": 0.02521110255092798,
+    "decision": "reject"
+  },
+  {
+    "time": 0.7,
+    "proposal": "D4->T10",
+    "baseline": {
+      "makespan": 1.2605551275463989,
+      "t_current": 0.7,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 0.9000627895974015,
+      "t_max_deploy_total": 0.9414213562373095,
+      "t_finish_search": 1.2605551275463989,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.2605551275463989,
+      "t_current": 0.7,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 0.9004515583324264,
+      "t_max_deploy_total": 0.9414213562373095,
+      "t_finish_search": 1.2605551275463989,
+      "bottleneck": "search"
+    },
+    "utility": 0.0,
+    "threshold": 0.02521110255092798,
+    "decision": "reject"
+  },
+  {
+    "time": 0.7999999999999999,
+    "proposal": "D5->T0",
+    "baseline": {
+      "makespan": 1.5,
+      "t_current": 0.7999999999999999,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.5,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.5,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.5,
+      "bottleneck": "search"
+    },
+    "utility": 0.0,
+    "threshold": 0.03,
+    "decision": "reject"
+  },
+  {
+    "time": 0.7999999999999999,
+    "proposal": "D7->T11",
+    "baseline": {
+      "makespan": 1.5,
+      "t_current": 0.7999999999999999,
+      "t_committed": 0.9414213562373095,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.5,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.3858224431479607,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.3858224431479607,
+      "bottleneck": "search"
+    },
+    "utility": 0.11417755685203934,
+    "threshold": 0.03,
+    "decision": "accept"
+  },
+  {
+    "time": 0.7999999999999999,
+    "proposal": "D9->T3",
+    "baseline": {
+      "makespan": 1.3858224431479607,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.3858224431479607,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.4,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.4,
+      "bottleneck": "search"
+    },
+    "utility": -0.014177556852039253,
+    "threshold": 0.027716448862959212,
+    "decision": "reject"
+  },
+  {
+    "time": 0.7999999999999999,
+    "proposal": "D11->T5",
+    "baseline": {
+      "makespan": 1.3858224431479607,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.3858224431479607,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.723606797749979,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.723606797749979,
+      "bottleneck": "search"
+    },
+    "utility": -0.3377843546020183,
+    "threshold": 0.027716448862959212,
+    "decision": "reject"
+  },
+  {
+    "time": 0.7999999999999999,
+    "proposal": "D4->T10",
+    "baseline": {
+      "makespan": 1.3858224431479607,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0007769276194518,
+      "t_max_deploy_total": 1.0007769276194518,
+      "t_finish_search": 1.3858224431479607,
+      "bottleneck": "search"
+    },
+    "after_action": {
+      "makespan": 1.3858224431479607,
+      "t_current": 0.7999999999999999,
+      "t_committed": 1.0,
+      "t_inevitable": 1.0000627895974015,
+      "t_max_deploy_total": 1.0000627895974015,
+      "t_finish_search": 1.3858224431479607,
+      "bottleneck": "search"
+    },
+    "utility": 0.0,
+    "threshold": 0.027716448862959212,
+    "decision": "reject"
+  }
+]

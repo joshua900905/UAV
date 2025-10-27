@@ -7,7 +7,7 @@ import random
 import numpy as np
 import pandas as pd
 import traceback
-import json # <--- 導入 json 模組
+import json 
 
 # 從我們的模組導入核心類別
 from planners import ImprovedKMeansGATSPPlanner, V42Planner
@@ -20,18 +20,18 @@ def main():
         # ======================================================================
         # === 1. 實驗參數設定 ===
         # ======================================================================
-        # 【新】測試 8x8, 12x12, 16x16 的網格
         GRID_SIZES = [8, 12, 16] 
-        # 【新】測試 K 從 4 到 16 的所有整數值
         K_VALUES = range(4, 17) 
-        # 無人機飛行速度
         DRONE_SPEED = 10.0
-        # 要比較的策略列表
         SIMULATION_STRATEGIES = [
             'greedy-dynamic', 
             'phased-hungarian', 
             'v4.2-adaptive'
         ]
+        # --- 修正 START: 新增樣本數參數 ---
+        # 為每個 (N, K) 組合運行的獨立隨機場景數量
+        NUM_SAMPLES = 10
+        # --- 修正 END ---
         
         # ======================================================================
         # === 2. 輸出目錄設定 ===
@@ -40,9 +40,8 @@ def main():
         PATH_PLOTS_DIR = os.path.join(BASE_OUTPUT_DIR, "path_plots")
         FINAL_STATE_DIR = os.path.join(BASE_OUTPUT_DIR, "final_states")
         ANALYSIS_DIR = os.path.join(BASE_OUTPUT_DIR, "analysis_reports")
-        LOGS_DIR = os.path.join(BASE_OUTPUT_DIR, "decision_logs") # <--- 新增日誌目錄
+        LOGS_DIR = os.path.join(BASE_OUTPUT_DIR, "decision_logs") 
         
-        # 確保所有輸出目錄都存在
         for d in [PATH_PLOTS_DIR, FINAL_STATE_DIR, ANALYSIS_DIR, LOGS_DIR]:
             os.makedirs(d, exist_ok=True)
 
@@ -55,64 +54,69 @@ def main():
         for N in GRID_SIZES:
             print(f"\n{'='*80}\nPROCESSING GRID SIZE: {N}x{N}\n{'='*80}")
             
-            # 過濾掉不合理的 K 值 (無人機數量不能超過網格點總數)
             valid_k_values = [k for k in K_VALUES if k <= N*N]
 
             for k in valid_k_values:
-                print(f"\n--- Running K={k} on {N}x{N} ---")
                 
-                # 【關鍵】為每個 (N, K) 組合設定相同的隨機種子
-                # 這確保了不同策略面對的是完全相同的初始目標分佈，保證比較公平性。
-                current_seed = N * 100 + k
-                
-                results_for_current_k = []
+                # --- 修正 START: 為每個 (N, K) 組合運行多個樣本 ---
+                results_for_first_sample = [] # 用於繪製單一樣本的路徑圖
 
-                for strategy in SIMULATION_STRATEGIES:
-                    # 重置種子，確保每種策略都在相同的「平行宇宙」中運行
-                    random.seed(current_seed)
-                    np.random.seed(current_seed)
+                for sample_idx in range(NUM_SAMPLES):
+                    print(f"\n--- Running K={k} on {N}x{N} (Sample {sample_idx + 1}/{NUM_SAMPLES}) ---")
                     
-                    print(f"\n... Starting simulation for strategy: {strategy} ...")
-                    sim_start_time = time.time()
+                    # 為每個樣本設定不同的、但可重現的隨機種子
+                    # 這確保了在同一個樣本內，不同策略面對的是相同的目標分佈
+                    current_seed = N * 1000 + k * 100 + sample_idx
+                # --- 修正 END ---
                     
-                    # 【關鍵】根據策略類型選擇正確的 Planner
-                    if strategy == 'v4.2-adaptive':
-                        # V4.2 策略需要專門的 V42Planner 來提供評估能力
-                        planner = V42Planner(N=N, K=k, drone_speed=DRONE_SPEED)
-                    else:
-                        # 其他策略只需要基礎的 K-Means+TSP 規劃能力
-                        planner = ImprovedKMeansGATSPPlanner(N=N, K=k, drone_speed=DRONE_SPEED)
-                    
-                    # 實例化並運行模擬
-                    sim = InteractiveSimulation(planner, strategy=strategy)
-                    result = sim.run()
-                    
-                    elapsed = time.time() - sim_start_time
-                    print(f"  -> '{result['Strategy']}' finished in {elapsed:.2f}s. Makespan: {result['Makespan']:.2f}s")
-                    
-                    # --- 【新增】保存 v4.2 策略的決策日誌 ---
-                    if strategy == 'v4.2-adaptive' and isinstance(planner, V42Planner):
-                        log_filename = os.path.join(LOGS_DIR, f"decision_log_{N}x{N}_K{k}.json")
-                        with open(log_filename, 'w') as f:
-                            json.dump(planner.decision_log, f, indent=2)
-                        print(f"  -> Decision log saved to: {log_filename}")
+                    for strategy in SIMULATION_STRATEGIES:
+                        random.seed(current_seed)
+                        np.random.seed(current_seed)
+                        
+                        print(f"\n... Starting simulation for strategy: {strategy} ...")
+                        sim_start_time = time.time()
+                        
+                        if strategy == 'v4.2-adaptive':
+                            planner = V42Planner(N=N, K=k, drone_speed=DRONE_SPEED)
+                        else:
+                            planner = ImprovedKMeansGATSPPlanner(N=N, K=k, drone_speed=DRONE_SPEED)
+                        
+                        sim = InteractiveSimulation(planner, strategy=strategy)
+                        result = sim.run()
+                        
+                        elapsed = time.time() - sim_start_time
+                        print(f"  -> '{result['Strategy']}' finished in {elapsed:.2f}s. Makespan: {result['Makespan']:.2f}s")
+                        
+                        if strategy == 'v4.2-adaptive' and isinstance(planner, V42Planner):
+                            # --- 修正: 檔案名稱加入樣本號以避免覆蓋 ---
+                            log_filename = os.path.join(LOGS_DIR, f"decision_log_{N}x{N}_K{k}_sample{sample_idx}.json")
+                            with open(log_filename, 'w') as f:
+                                json.dump(planner.decision_log, f, indent=2)
+                            print(f"  -> Decision log saved to: {log_filename}")
 
-                    # 記錄結果
-                    result['N'] = N
-                    result['K'] = k
-                    all_results_data.append(result)
-                    results_for_current_k.append(result)
+                        # --- 修正: 記錄結果時加入樣本號 ---
+                        result['N'] = N
+                        result['K'] = k
+                        result['Sample'] = sample_idx
+                        all_results_data.append(result)
+                        # --- 修正 END ---
 
-                # --- 在完成一個 K 值的所有策略後，立即繪圖 ---
-                print(f"  -> Generating plots for N={N}, K={k}...")
-                try:
-                    # 1. 繪製路徑對比圖
-                    plot_paths(N, k, results_for_current_k, PATH_PLOTS_DIR)
-                    # 2. 繪製最終狀態對比圖
-                    plot_final_state(N, k, results_for_current_k, FINAL_STATE_DIR)
-                except Exception as e:
-                    print(f"  [Error] Failed to generate plots for N={N}, K={k}: {e}")
-                    traceback.print_exc()
+                        # --- 修正: 只為第一個樣本收集繪圖數據 ---
+                        if sample_idx == 0:
+                            results_for_first_sample.append(result)
+                        # --- 修正 END ---
+
+                # --- 修正 START: 只為第一個樣本繪製詳細路徑圖 ---
+                # 這樣可以避免生成過多的圖片文件，同時保留一個可視化的範例
+                if results_for_first_sample:
+                    print(f"  -> Generating plots for N={N}, K={k} (from first sample)...")
+                    try:
+                        plot_paths(N, k, results_for_first_sample, PATH_PLOTS_DIR)
+                        plot_final_state(N, k, results_for_first_sample, FINAL_STATE_DIR)
+                    except Exception as e:
+                        print(f"  [Error] Failed to generate plots for N={N}, K={k}: {e}")
+                        traceback.print_exc()
+                # --- 修正 END ---
 
         # ======================================================================
         # === 4. 結果匯總與分析 ===
@@ -120,32 +124,32 @@ def main():
         print(f"\n{'='*80}\nEXPERIMENT COMPLETED in {time.time() - experiment_start_time:.2f} seconds\n{'='*80}")
         
         if all_results_data:
-            # 僅保留用於分析的關鍵欄位，以減小 DataFrame 大小
+            # --- 修正: 在分析數據中也保留 Sample 欄位 ---
             analysis_data = [
                 {
                     'N': r['N'], 'K': r['K'], 'Strategy': r['Strategy'], 
-                    'Makespan': r['Makespan'], 'Total_Distance': r['Total_Distance']
+                    'Makespan': r['Makespan'], 'Total_Distance': r['Total_Distance'],
+                    'Sample': r['Sample']
                 } 
                 for r in all_results_data
             ]
             df = pd.DataFrame(analysis_data)
             
-            # 儲存原始數據
             csv_path = os.path.join(BASE_OUTPUT_DIR, "full_simulation_results.csv")
             df.to_csv(csv_path, index=False)
             print(f"Full results saved to: {csv_path}")
 
-            # 在控制台顯示摘要
+            # 在控制台顯示摘要 (顯示平均值)
             for N in GRID_SIZES:
                 df_n = df[df['N'] == N]
                 if df_n.empty: continue
-                print(f"\nSummary for {N}x{N} Grid:")
-                # 使用 pivot_table 讓結果更清晰
-                summary = df_n.pivot_table(index='K', columns='Strategy', values='Makespan')
+                print(f"\nSummary for {N}x{N} Grid (Average Makespan over {NUM_SAMPLES} samples):")
+                # 使用 pivot_table，它會自動計算平均值
+                summary = df_n.pivot_table(index='K', columns='Strategy', values='Makespan', aggfunc=np.mean)
                 print(summary.round(2))
 
-            # 生成分析圖表
-            print("\nGenerating analysis charts...")
+            # 生成分析圖表 (現在會是平均值圖表)
+            print("\nGenerating analysis charts (based on averages)...")
             plot_analysis_charts(df, ANALYSIS_DIR)
             print(f"Analysis charts saved to: {ANALYSIS_DIR}")
             
