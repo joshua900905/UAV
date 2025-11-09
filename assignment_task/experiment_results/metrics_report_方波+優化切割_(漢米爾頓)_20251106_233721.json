@@ -1,0 +1,390 @@
+{
+  "metadata": {
+    "timestamp": "2025-11-06T23:37:21.962768",
+    "makespan": 299.9999999999997,
+    "total_events": 52
+  },
+  "data1_outer_coverage": {
+    "phase1_completion": null,
+    "per_uav": [
+      {
+        "uav_id": 0,
+        "outer_complete_time": 23.8,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 1,
+        "outer_complete_time": 22.7,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 2,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 3,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 4,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 5,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 6,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 7,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 8,
+        "outer_complete_time": 14.2,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 9,
+        "outer_complete_time": 14.2,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 10,
+        "outer_complete_time": 13.9,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 11,
+        "outer_complete_time": 24.5,
+        "advance_before_phase1": null
+      }
+    ]
+  },
+  "data2_inner_selection_order": {
+    "completion_order": [
+      {
+        "rank": 1,
+        "uav_id": 10,
+        "complete_time": 13.9,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 2,
+        "uav_id": 8,
+        "complete_time": 14.2,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 3,
+        "uav_id": 9,
+        "complete_time": 14.2,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 4,
+        "uav_id": 1,
+        "complete_time": 22.7,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 5,
+        "uav_id": 0,
+        "complete_time": 23.8,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 6,
+        "uav_id": 5,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      },
+      {
+        "rank": 7,
+        "uav_id": 4,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      },
+      {
+        "rank": 8,
+        "uav_id": 2,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      },
+      {
+        "rank": 9,
+        "uav_id": 7,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      },
+      {
+        "rank": 10,
+        "uav_id": 3,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      },
+      {
+        "rank": 11,
+        "uav_id": 11,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      },
+      {
+        "rank": 12,
+        "uav_id": 6,
+        "complete_time": 24.5,
+        "selected_for_inner": true
+      }
+    ],
+    "inner_selected_uavs": [
+      5,
+      4,
+      2,
+      7,
+      3,
+      11,
+      6
+    ],
+    "inner_uav_ranks": [
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ]
+  },
+  "data3_known_targets": {
+    "phase1_completion_time": null,
+    "discovered_count": 0,
+    "targets": []
+  },
+  "data4_inner_efficiency": {
+    "per_inner_uav": [
+      {
+        "uav_id": 5,
+        "inner_start_time": 7.0,
+        "inner_end_time": 30.9,
+        "inner_duration": 23.9,
+        "targets_discovered": 1,
+        "discoveries": [
+          {
+            "target_id": 7,
+            "time": 9.9,
+            "time_since_inner_start": 2.9
+          }
+        ],
+        "discovery_intervals": [],
+        "mean_interval": null,
+        "discovery_rate": 0.0418
+      },
+      {
+        "uav_id": 4,
+        "inner_start_time": 9.8,
+        "inner_end_time": 32.2,
+        "inner_duration": 22.4,
+        "targets_discovered": 0,
+        "discoveries": [],
+        "discovery_intervals": [],
+        "mean_interval": null,
+        "discovery_rate": 0.0
+      },
+      {
+        "uav_id": 2,
+        "inner_start_time": 11.3,
+        "inner_end_time": 31.9,
+        "inner_duration": 20.6,
+        "targets_discovered": 2,
+        "discoveries": [
+          {
+            "target_id": 11,
+            "time": 17.8,
+            "time_since_inner_start": 6.5
+          },
+          {
+            "target_id": 8,
+            "time": 19.0,
+            "time_since_inner_start": 7.7
+          }
+        ],
+        "discovery_intervals": [
+          1.2
+        ],
+        "mean_interval": 1.2,
+        "discovery_rate": 0.0971
+      },
+      {
+        "uav_id": 7,
+        "inner_start_time": 12.4,
+        "inner_end_time": 300.0,
+        "inner_duration": 287.6,
+        "targets_discovered": 0,
+        "discoveries": [],
+        "discovery_intervals": [],
+        "mean_interval": null,
+        "discovery_rate": 0.0
+      },
+      {
+        "uav_id": 3,
+        "inner_start_time": 13.6,
+        "inner_end_time": 300.0,
+        "inner_duration": 286.4,
+        "targets_discovered": 0,
+        "discoveries": [],
+        "discovery_intervals": [],
+        "mean_interval": null,
+        "discovery_rate": 0.0
+      },
+      {
+        "uav_id": 11,
+        "inner_start_time": 13.7,
+        "inner_end_time": 300.0,
+        "inner_duration": 286.3,
+        "targets_discovered": 1,
+        "discoveries": [
+          {
+            "target_id": 0,
+            "time": 20.2,
+            "time_since_inner_start": 6.5
+          }
+        ],
+        "discovery_intervals": [],
+        "mean_interval": null,
+        "discovery_rate": 0.0035
+      },
+      {
+        "uav_id": 6,
+        "inner_start_time": 13.9,
+        "inner_end_time": 300.0,
+        "inner_duration": 286.1,
+        "targets_discovered": 1,
+        "discoveries": [
+          {
+            "target_id": 2,
+            "time": 24.4,
+            "time_since_inner_start": 10.5
+          }
+        ],
+        "discovery_intervals": [],
+        "mean_interval": null,
+        "discovery_rate": 0.0035
+      }
+    ]
+  },
+  "data5_max_assignment_distance": {
+    "max_distance": 12.0,
+    "uav_id": 1,
+    "target_id": 3,
+    "all_assignments": [
+      {
+        "uav_id": 10,
+        "target_id": 1,
+        "distance": 4.0
+      },
+      {
+        "uav_id": 10,
+        "target_id": 9,
+        "distance": 5.0
+      },
+      {
+        "uav_id": 8,
+        "target_id": 4,
+        "distance": 2.0
+      },
+      {
+        "uav_id": 9,
+        "target_id": 10,
+        "distance": 5.0
+      },
+      {
+        "uav_id": 1,
+        "target_id": 3,
+        "distance": 12.0
+      },
+      {
+        "uav_id": 0,
+        "target_id": 6,
+        "distance": 11.0
+      }
+    ]
+  },
+  "data6_utilization": {
+    "makespan": 299.9999999999997,
+    "per_uav": [
+      {
+        "uav_id": 0,
+        "stop_time": 34.9,
+        "idle_time": 265.1,
+        "active_time": 34.9,
+        "utilization_percent": 11.63,
+        "stopped_while_others_flying": false
+      },
+      {
+        "uav_id": 1,
+        "stop_time": 32.9,
+        "idle_time": 267.1,
+        "active_time": 32.9,
+        "utilization_percent": 10.97,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 2,
+        "stop_time": 31.9,
+        "idle_time": 268.1,
+        "active_time": 31.9,
+        "utilization_percent": 10.63,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 4,
+        "stop_time": 32.2,
+        "idle_time": 267.8,
+        "active_time": 32.2,
+        "utilization_percent": 10.73,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 5,
+        "stop_time": 30.9,
+        "idle_time": 269.1,
+        "active_time": 30.9,
+        "utilization_percent": 10.3,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 8,
+        "stop_time": 16.3,
+        "idle_time": 283.7,
+        "active_time": 16.3,
+        "utilization_percent": 5.43,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 9,
+        "stop_time": 19.3,
+        "idle_time": 280.7,
+        "active_time": 19.3,
+        "utilization_percent": 6.43,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 10,
+        "stop_time": 18.2,
+        "idle_time": 281.8,
+        "active_time": 18.2,
+        "utilization_percent": 6.07,
+        "stopped_while_others_flying": true
+      }
+    ],
+    "average_utilization": 9.02
+  }
+}

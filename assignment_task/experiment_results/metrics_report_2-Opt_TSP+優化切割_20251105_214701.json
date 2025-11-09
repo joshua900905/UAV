@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "timestamp": "2025-11-05T21:47:01.485745",
+    "makespan": 56.90000000000054,
+    "total_events": 12
+  },
+  "data1_outer_coverage": {
+    "phase1_completion": null,
+    "per_uav": [
+      {
+        "uav_id": 0,
+        "outer_complete_time": 39.3,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 1,
+        "outer_complete_time": 49.8,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 2,
+        "outer_complete_time": 50.0,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 3,
+        "outer_complete_time": 48.8,
+        "advance_before_phase1": null
+      }
+    ]
+  },
+  "data2_inner_selection_order": {
+    "completion_order": [
+      {
+        "rank": 1,
+        "uav_id": 0,
+        "complete_time": 39.3,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 2,
+        "uav_id": 3,
+        "complete_time": 48.8,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 3,
+        "uav_id": 1,
+        "complete_time": 49.8,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 4,
+        "uav_id": 2,
+        "complete_time": 50.0,
+        "selected_for_inner": false
+      }
+    ],
+    "inner_selected_uavs": [],
+    "inner_uav_ranks": []
+  },
+  "data3_known_targets": {
+    "phase1_completion_time": null,
+    "discovered_count": 0,
+    "targets": []
+  },
+  "data4_inner_efficiency": {
+    "error": "No inner UAVs selected"
+  },
+  "data5_max_assignment_distance": {
+    "error": "No assignments recorded"
+  },
+  "data6_utilization": {
+    "makespan": 56.90000000000054,
+    "per_uav": [
+      {
+        "uav_id": 0,
+        "stop_time": 45.2,
+        "idle_time": 11.7,
+        "active_time": 45.2,
+        "utilization_percent": 79.44,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 1,
+        "stop_time": 50.9,
+        "idle_time": 6.0,
+        "active_time": 50.9,
+        "utilization_percent": 89.46,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 2,
+        "stop_time": 52.9,
+        "idle_time": 4.0,
+        "active_time": 52.9,
+        "utilization_percent": 92.97,
+        "stopped_while_others_flying": true
+      },
+      {
+        "uav_id": 3,
+        "stop_time": 56.9,
+        "idle_time": 0.0,
+        "active_time": 56.9,
+        "utilization_percent": 100.0,
+        "stopped_while_others_flying": false
+      }
+    ],
+    "average_utilization": 90.47
+  }
+}
