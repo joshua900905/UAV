@@ -34,14 +34,15 @@ except Exception as e:
 
 def plot_snapshot(env, sim, snap_idx, out_dir):
     """Plot current positions, path progress and discovered targets and save PNG."""
-    fig, ax = plt.subplots(figsize=(6,6))
+    # Increase figure size to accommodate more UAVs (up to 12)
+    fig, ax = plt.subplots(figsize=(10, 8))
     grid = env.grid_size
 
-    # draw grid
-    ax.set_xlim(-0.5, grid-0.5)
-    ax.set_ylim(-0.5, grid-0.5)
-    ax.set_xticks(range(grid))
-    ax.set_yticks(range(grid))
+    # draw grid - extend limits slightly to show edge cells completely
+    ax.set_xlim(-0.5, grid + 0.5)
+    ax.set_ylim(-0.5, grid + 0.5)
+    ax.set_xticks(range(grid + 1))
+    ax.set_yticks(range(grid + 1))
     ax.grid(True, color='#cccccc', linewidth=0.5)
     ax.set_aspect('equal')
 
@@ -57,29 +58,38 @@ def plot_snapshot(env, sim, snap_idx, out_dir):
     dy_disc = [t.y+0.5 for t in env.targets if t.discovered]
     dx_und = [t.x+0.5 for t in env.targets if not t.discovered]
     dy_und = [t.y+0.5 for t in env.targets if not t.discovered]
-    ax.scatter(dx_und, dy_und, marker='x', c='black', label='undiscovered')
-    ax.scatter(dx_disc, dy_disc, marker='o', facecolors='none', edgecolors='green', s=80, label='discovered')
+    ax.scatter(dx_und, dy_und, marker='x', c='black', label='undiscovered', s=100)
+    ax.scatter(dx_disc, dy_disc, marker='o', facecolors='none', edgecolors='green', s=100, linewidths=2, label='discovered')
 
+    # Use a color map for up to 12 UAVs
+    import matplotlib.cm as cm
+    colors = cm.tab20(range(env.num_uavs)) if env.num_uavs <= 20 else cm.rainbow(range(env.num_uavs))
+    
     # draw UAV paths and positions
     for uav in env.uavs:
+        color = colors[uav.id] if uav.id < len(colors) else 'blue'
+        
         # full path (original assigned path saved in outer_path if available)
         if hasattr(uav, 'outer_path') and uav.outer_path:
             px = [p[0]+0.5 for p in uav.outer_path]
             py = [p[1]+0.5 for p in uav.outer_path]
-            ax.plot(px, py, linestyle='--', linewidth=1.0, alpha=0.6, label=f'UAV{uav.id} outer')
+            ax.plot(px, py, linestyle='--', linewidth=1.0, alpha=0.4, color=color)
 
         # current path remaining
         if uav.path:
             px2 = [p[0]+0.5 for p in uav.path]
             py2 = [p[1]+0.5 for p in uav.path]
-            ax.plot(px2, py2, linestyle='-', linewidth=1.5, alpha=0.8)
+            ax.plot(px2, py2, linestyle='-', linewidth=2.0, alpha=0.7, color=color)
 
-        # current position
-        ax.plot(uav.position[0]+0.5, uav.position[1]+0.5, marker='o', markersize=8,
-                label=f'U{uav.id} pos')
+        # current position (position is already at cell center, no offset needed)
+        # Add label only for position marker to reduce legend clutter
+        ax.plot(uav.position[0], uav.position[1], marker='o', markersize=10,
+                color=color, markeredgecolor='black', markeredgewidth=1.5, 
+                label=f'UAV {uav.id}')
 
-    ax.set_title(f'Snapshot {snap_idx:02d} - t={env.current_time:.1f}s')
-    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+    ax.set_title(f'Snapshot {snap_idx:02d} - t={env.current_time:.1f}s', fontsize=14, fontweight='bold')
+    # Adjust legend to accommodate up to 12+ UAVs with smaller font
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=8, framealpha=0.9)
     plt.tight_layout()
 
     fname = os.path.join(out_dir, f'snapshot_{snap_idx:02d}.png')

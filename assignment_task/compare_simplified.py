@@ -344,8 +344,10 @@ class BoustrophedonPlanner:
                 assignments[uav_id] = path
                 print(f"        UAV {uav_id}: {len(path)} 格點, 起點 {path[0] if path else 'N/A'}, 終點 {path[-1] if path else 'N/A'}")
         
-        # 6. UAV 6-7: 左邊矩形 [1-4, 5-10] 水平掃描（2台UAV）
-        print(f"\n    規劃 UAV 6-7 (左邊矩形 [1-4, 5-10])...")
+        # 6. UAV 6-11: 左邊矩形 [1-4, 5-10] 水平掃描（最多6台UAV，取決於num_uavs）
+        # 左邊矩形高度為6（Y=5到10），最多支援6台UAV（每台1行）
+        # 總計：UAV 0-1（外圍）+ UAV 2-5（下方矩形4台）+ UAV 6-11（左邊矩形6台）= 12台
+        print(f"\n    規劃 UAV 6-11 (左邊矩形 [1-4, 5-10])...")
         
         # 定義左邊矩形範圍：X=[1,4], Y=[5,10]
         left_rect_x = list(range(1, 5))    # [1, 2, 3, 4]
@@ -355,11 +357,16 @@ class BoustrophedonPlanner:
         left_rect_cells = {(x, y) for x in left_rect_x for y in left_rect_y 
                           if (x, y) in search_area and (x, y) not in occupied_cells}
         
-        if left_rect_cells and num_uavs >= 8:  # 確保有UAV 6-7
-            # 2台UAV分配左邊矩形（高度6）
-            num_left_uavs = 2
-            left_height = len(left_rect_y)
-            rows_per_uav = max(1, left_height // num_left_uavs)  # 每台UAV負責3行
+        if left_rect_cells and num_uavs >= 7:  # 至少需要7台UAV才有UAV 6
+            # 計算需要多少台UAV來覆蓋左邊矩形
+            # UAV 0-1（外圍）+ UAV 2-5（下方4台）已使用6台，左邊矩形可用 num_uavs - 6 台
+            num_left_uavs = min(num_uavs - 6, 6)  # 最多6台（左邊矩形高度為6）
+            left_height = len(left_rect_y)  # 6行
+            
+            # 每台UAV負責的行數（盡量平均分配）
+            rows_per_uav = max(1, left_height // num_left_uavs)
+            
+            print(f"      左邊矩形高度: {left_height}, 分配 {num_left_uavs} 台UAV, 每台約 {rows_per_uav} 行")
             
             for uav_idx in range(num_left_uavs):
                 uav_id = 6 + uav_idx
@@ -368,7 +375,7 @@ class BoustrophedonPlanner:
                 start_y = min(left_rect_y) + uav_idx * rows_per_uav
                 end_y = min(start_y + rows_per_uav - 1, max(left_rect_y))
                 if uav_idx == num_left_uavs - 1:
-                    end_y = max(left_rect_y)
+                    end_y = max(left_rect_y)  # 最後一台UAV負責剩餘所有行
                 
                 print(f"      規劃 UAV {uav_id}: Y=[{start_y},{end_y}]")
                 
