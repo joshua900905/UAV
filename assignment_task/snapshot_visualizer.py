@@ -54,10 +54,11 @@ def plot_snapshot(env, sim, snap_idx, out_dir):
         ax.scatter([x+0.5 for x in xs], [y+0.5 for y in ys], s=120, c='lightblue', alpha=0.25, edgecolor='none')
 
     # draw targets: discovered vs undiscovered
-    dx_disc = [t.x+0.5 for t in env.targets if t.discovered]
-    dy_disc = [t.y+0.5 for t in env.targets if t.discovered]
-    dx_und = [t.x+0.5 for t in env.targets if not t.discovered]
-    dy_und = [t.y+0.5 for t in env.targets if not t.discovered]
+    # t.x and t.y are already at cell center (e.g., 3.5, 5.5), no offset needed
+    dx_disc = [t.x for t in env.targets if t.discovered]
+    dy_disc = [t.y for t in env.targets if t.discovered]
+    dx_und = [t.x for t in env.targets if not t.discovered]
+    dy_und = [t.y for t in env.targets if not t.discovered]
     ax.scatter(dx_und, dy_und, marker='x', c='black', label='undiscovered', s=100)
     ax.scatter(dx_disc, dy_disc, marker='o', facecolors='none', edgecolors='green', s=100, linewidths=2, label='discovered')
 
