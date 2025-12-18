@@ -1,0 +1,99 @@
+{
+  "metadata": {
+    "timestamp": "2025-12-18T11:20:53.764039",
+    "makespan": 30.700000000000166,
+    "total_events": 11
+  },
+  "data1_outer_coverage": {
+    "phase1_completion": null,
+    "per_uav": [
+      {
+        "uav_id": 0,
+        "outer_complete_time": 23.8,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 1,
+        "outer_complete_time": 22.6,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 2,
+        "outer_complete_time": 22.0,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 3,
+        "outer_complete_time": 15.3,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 4,
+        "outer_complete_time": 22.7,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 5,
+        "outer_complete_time": 30.7,
+        "advance_before_phase1": null
+      }
+    ]
+  },
+  "data2_inner_selection_order": {
+    "completion_order": [
+      {
+        "rank": 1,
+        "uav_id": 3,
+        "complete_time": 15.3,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 2,
+        "uav_id": 2,
+        "complete_time": 22.0,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 3,
+        "uav_id": 1,
+        "complete_time": 22.6,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 4,
+        "uav_id": 4,
+        "complete_time": 22.7,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 5,
+        "uav_id": 0,
+        "complete_time": 23.8,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 6,
+        "uav_id": 5,
+        "complete_time": 30.7,
+        "selected_for_inner": false
+      }
+    ],
+    "inner_selected_uavs": [],
+    "inner_uav_ranks": []
+  },
+  "data3_known_targets": {
+    "phase1_completion_time": null,
+    "discovered_count": 0,
+    "targets": []
+  },
+  "data4_inner_efficiency": {
+    "error": "No inner UAVs selected"
+  },
+  "data5_max_assignment_distance": {
+    "error": "No assignments recorded"
+  },
+  "data6_utilization": {
+    "makespan": 30.700000000000166,
+    "per_uav": []
+  }
+}
