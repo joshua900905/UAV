@@ -1,10 +1,4 @@
-"""
-簡化版對比測試：方波 vs 2-Opt TSP
 
-核心功能
-2. 2-Opt TSP + 切割 + 優化切割點
-3. 中心保留區策略（甜甜圈搜尋）
-"""
 
 import sys
 import io
@@ -133,829 +127,234 @@ class Environment:
 # ============================================================================
 
 class BoustrophedonPlanner:
-    """方波掃描規劃器"""
+    """風車式混合演算法規劃器 (修正版：保底分配 + 嚴格邊界)"""
     
-    def __init__(self, speed: float = 1.0, use_donut_strategy: bool = False,
+    def __init__(self, speed: float = 1.0,
                  reserved_x: int = None, reserved_y: int = None,
                  reserved_width: int = 6, reserved_height: int = 6):
-        """
-        Args:
-            speed: UAV 速度
-            use_donut_strategy: 是否使用甜甜圈策略
-            reserved_x: 內環區左下角 X 座標（若為 None，自動計算為右上角位置）
-            reserved_y: 內環區左下角 Y 座標（若為 None，自動計算為右上角位置）
-            reserved_width: 內環區寬度
-            reserved_height: 內環區高度
-        """
         self.speed = speed
-        self.use_donut_strategy = use_donut_strategy
         self.reserved_x = reserved_x
         self.reserved_y = reserved_y
-        self.reserved_width = reserved_width
-        self.reserved_height = reserved_height
+        self.rw = reserved_width
+        self.rh = reserved_height
         self.reserved_area: Set[Tuple[int, int]] = set()
     
-    def plan(self, all_cells: Set[Tuple[int, int]], num_uavs: int, gcs_pos: Tuple[float, float]) -> Dict[int, List[Tuple[int, int]]]:
-        """
-        主要規劃方法
-        
-        如果使用甜甜圈策略，返回字典格式的路徑分配
-        否則返回簡單的方波掃描路徑
-        """
-        if self.use_donut_strategy:
-            # 創建臨時環境對象供plan_donut使用
-            class TempEnv:
-                def __init__(self, grid_size, num_uavs):
-                    self.grid_size = grid_size
-                    self.num_uavs = num_uavs
+    def _init_geometry(self, N: int):
+        """初始化內環幾何位置"""
+        if self.reserved_x is None: self.rx = (N - self.rw) // 2
+        else: self.rx = self.reserved_x
             
-            grid_size = int(np.sqrt(len(all_cells)))
-            env = TempEnv(grid_size, num_uavs)
-            return self.plan_donut(env, gcs_pos)
-        else:
-            # 簡單方波掃描
-            grid_size = int(np.sqrt(len(all_cells)))
-            path = []
-            for y in range(grid_size):
-                if y % 2 == 0:
-                    for x in range(grid_size):
-                        path.append((x, y))
-                else:
-                    for x in range(grid_size - 1, -1, -1):
-                        path.append((x, y))
+        if self.reserved_y is None: self.ry = (N - self.rh) // 2
+        else: self.ry = self.reserved_y
             
-            # 簡單方波掃描模式（目前不使用，因為總是使用 donut 策略）
-            # 如需使用，需要實現切割邏輯
-            raise NotImplementedError("非 donut 模式目前未實現，請使用 --donut 參數")
-    
-    def plan_donut(self, env: 'Environment', gcs_pos: Tuple[float, float]) -> Dict[int, List[Tuple[int, int]]]:
-        """使用甜甜圈策略規劃"""
-        grid_size = env.grid_size
-        num_uavs = env.num_uavs
-        
-        # 1. 初始化幾何參數
-        self._init_geometry(grid_size)
-        
-        assignments = {}
-        occupied_cells = set()
-        
-        # 2. 階段一：建立骨幹 (Backbone) - UAV 0 & 1
-        # UAV 0 (藍): 逆時針底+右
-        # UAV 1 (綠): 順時針左+上
-        backbone_paths = self._plan_backbone(grid_size)
-        
-        # 分配骨幹
-        for i in range(min(2, num_uavs)):
-            assignments[i] = backbone_paths[i]
-            for cell in backbone_paths[i]:
-                occupied_cells.add(cell)
-        
-        # 3. 階段二：外環並行推進
-        remaining_uavs = num_uavs - 2
-        
-        if remaining_uavs > 0:
-            # 定義有效的外環搜尋區域 (排除內環，排除骨幹)
-            # 骨幹佔據了 0 和 N-1 的邊界，所以有效範圍是 1 到 N-2
-            search_bounds = (1, grid_size - 1, 1, grid_size - 1)  # x_min, x_max, y_min, y_max (左閉右開)
-            
-            # 執行區域劃分與遞迴路徑生成
-            zone_assignments = self._plan_zones(remaining_uavs, grid_size, search_bounds, occupied_cells)
-            
-            # 合併結果 (UAV ID 從 2 開始)
-            current_id = 2
-            for path in zone_assignments:
-                if current_id < num_uavs:
-                    assignments[current_id] = path
-                    current_id += 1
-        
-        # 填補空缺 (若 UAV 多於路徑數)
-        for i in range(num_uavs):
-            if i not in assignments:
-                assignments[i] = []
-                
-        return assignments
-
-    def _init_geometry(self, grid_size: int):
-        """初始化幾何參數與保留區"""
-        # 若未指定位置，預設為右上角 (保留 1 格骨幹空間)
-        if self.reserved_x is None:
-            self.rx = grid_size - self.reserved_width - 1
-        else:
-            self.rx = self.reserved_x
-            
-        if self.reserved_y is None:
-            self.ry = grid_size - self.reserved_height - 1
-        else:
-            self.ry = self.reserved_y
-            
-        self.rw = self.reserved_width
-        self.rh = self.reserved_height
-            
-        # 建立保留區集合
         self.reserved_area = set()
         for y in range(self.ry, self.ry + self.rh):
             for x in range(self.rx, self.rx + self.rw):
-                if 0 <= x < grid_size and 0 <= y < grid_size:
+                if 0 <= x < N and 0 <= y < N:
                     self.reserved_area.add((x, y))
-        print(f"\n[幾何初始化] N={grid_size}, 內環: ({self.rx},{self.ry}) {self.rw}x{self.rh}")
+        print(f"[幾何] N={N}, 內環:({self.rx},{self.ry}) {self.rw}x{self.rh}")
 
-    def _plan_backbone(self, N: int) -> List[List[Tuple[int, int]]]:
-        """規劃骨幹路徑"""
-        path0 = []
-        # 底邊 (0,0) -> (N-1, 0)
-        for x in range(0, N):
-            path0.append((x, 0))
-        # 右邊 (N-1, 1) -> (N-1, N-1)
-        for y in range(1, N):
-            path0.append((N-1, y))
-            
-        path1 = []
-        # 左邊 (0,0) -> (0, N-1) (避開已被path0佔據的(0,0))
-        for y in range(0, N):
-            if (0, y) not in path0:
-                path1.append((0, y))
-        # 頂邊 (1, N-1) -> (N-2, N-1) (避開右上角由UAV0佔領)
-        for x in range(1, N-1):
-            path1.append((x, N-1))
-            
-        print(f"\n[Phase 1] 骨幹路徑: UAV 0 ({len(path0)} 格), UAV 1 ({len(path1)} 格)")
-        return [path0, path1]
-
-    def _plan_zones(self, num_uavs: int, N: int, search_bounds: Tuple[int, int, int, int], 
-                   occupied: Set[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
-        """
-        核心演算法：區域劃分 + 遞迴二分
-        採用「上下全寬，左右夾擊」的互斥劃分法
-        """
-        sx1, sx2, sy1, sy2 = search_bounds  # 有效搜尋範圍 [1, N-1)
-        
-        # 內環邊界 (限制在搜尋範圍內)
-        ix1 = max(sx1, min(sx2, self.rx))
-        ix2 = max(sx1, min(sx2, self.rx + self.rw))
-        iy1 = max(sy1, min(sy2, self.ry))
-        iy2 = max(sy1, min(sy2, self.ry + self.rh))
-        
-        # 定義四個外環區域 (互斥劃分)
-        # O_B (底): 全寬度 X:[sx1, sx2], Y:[sy1, iy1]
-        # O_T (頂): 全寬度 X:[sx1, sx2], Y:[iy2, sy2]
-        # O_L (左): 夾心 X:[sx1, ix1], Y:[iy1, iy2]
-        # O_R (右): 夾心 X:[ix2, sx2], Y:[iy1, iy2]
-        
-        zones = {
-            'O_B': {'bounds': (sx1, sx2, sy1, iy1), 'split': 'X', 'dir': 'Y_POS'},
-            'O_T': {'bounds': (sx1, sx2, iy2, sy2), 'split': 'X', 'dir': 'Y_NEG'},
-            'O_L': {'bounds': (sx1, ix1, iy1, iy2), 'split': 'Y', 'dir': 'X_POS'},
-            'O_R': {'bounds': (ix2, sx2, iy1, iy2), 'split': 'Y', 'dir': 'X_NEG'}
-        }
-        
-        # 計算有效面積 (建立實際有效格點集合)
-        zone_valid_cells = {}
-        total_valid_cells = 0
-        valid_zones = []  # 記錄有面積的區域
-        
-        for name, info in zones.items():
-            b = info['bounds']
-            w = max(0, b[1] - b[0])
-            h = max(0, b[3] - b[2])
-            area = w * h
-            
-            # 建立該區域的有效格點集合 (排除內環與骨幹)
-            cells = []
-            if area > 0:
-                for x in range(b[0], b[1]):
-                    for y in range(b[2], b[3]):
-                        if (x, y) not in occupied and (x, y) not in self.reserved_area:
-                            cells.append((x, y))
-            
-            zone_valid_cells[name] = set(cells)
-            # 重新計算面積 (以實際有效格點為準)
-            real_area = len(cells)
-            
-            if real_area > 0:
-                total_valid_cells += real_area
-                valid_zones.append(name)
-                info['real_area'] = real_area
-            else:
-                info['real_area'] = 0
-
-        print(f"\n[Phase 2] 資源分配 - 有效格點: {total_valid_cells}, 可用 UAV: {num_uavs}")
-        if total_valid_cells == 0 or not valid_zones:
-            return []
-
-        # --- 修正後的資源分配邏輯 ---
-        allocations = {z: 0 for z in zones}
-        remaining_uavs = num_uavs
-        
-        # 優先順序: O_B (近GCS) -> O_L -> O_R -> O_T
-        priority = [z for z in ['O_B', 'O_L', 'O_R', 'O_T'] if z in valid_zones]
-        
-        # 1. 每個有面積的區域「保底」分配 1 架 (如果資源夠)
-        for z in priority:
-            if remaining_uavs > 0:
-                allocations[z] = 1
-                remaining_uavs -= 1
-                
-        # 2. 剩餘資源按面積比例分配
-        if remaining_uavs > 0:
-            for z in priority:
-                ratio = zones[z]['real_area'] / total_valid_cells
-                extra = int(round(remaining_uavs * ratio))
-                allocations[z] += extra
-            
-            # 3. 修正總數誤差 (多退少補)
-            curr_total = sum(allocations.values())
-            
-            # 若分配超過 (因round進位)
-            while curr_total > num_uavs:
-                # 從面積最小或優先級最低的扣，但不能扣到0
-                for z in reversed(priority):
-                    if allocations[z] > 1:  # 保留至少1架
-                        allocations[z] -= 1
-                        curr_total -= 1
-                        if curr_total == num_uavs:
-                            break
-            
-            # 若分配不足
-            while curr_total < num_uavs:
-                # 加給面積最大的
-                best = max(priority, key=lambda z: zones[z]['real_area'])
-                allocations[best] += 1
-                curr_total += 1
-
-        for z in priority:
-            print(f"    區域 {z}: {zones[z]['real_area']} 格 -> {allocations[z]} 架")
-
-        # --- 路徑生成 ---
-        all_paths = []
-        
-        for z in priority:
-            k = allocations[z]
-            if k == 0:
-                continue
-            
-            info = zones[z]
-            # 遞迴二分
-            sub_regions = self._recursive_partition(info['bounds'], k, info['split'])
-            
-            for sub_bound in sub_regions:
-                # 生成路徑
-                path = self._generate_path(sub_bound, info['dir'])
-                # 過濾無效格點 (雙重保險：只保留屬於該區域有效集合的格點)
-                valid_path = [p for p in path if p in zone_valid_cells[z]]
-                
-                if valid_path:
-                    all_paths.append(valid_path)
-                else:
-                    # 分配了區域但格子無效 (極端情況)
-                    all_paths.append([])
-                    
-        return all_paths
+    def plan(self, all_cells: Set[Tuple[int, int]], num_uavs: int, gcs_pos: Tuple[float, float]) -> Dict[int, List[Tuple[int, int]]]:
+        N = int(np.sqrt(len(all_cells)))
+        self._init_geometry(N)
+        return self._plan_recursive_hybrid(N, num_uavs)
     
-    def _plan_ccw_zones_OLD(self, zones: dict, num_uavs: int, grid_size: int, gcs_pos: Tuple[float, float]) -> Dict[int, List[Tuple[int, int]]]:
-        """
-        根據 CCW 合併區域分配 UAV 路徑
-        
-        策略：
-        Phase 1: UAV 0-1 建立骨幹路徑（外圈邊界）
-        Phase 2: 剩餘 UAV 使用平行通道掃描覆蓋外環區
-        """
-        print(f"\n  ✓ CCW 區域路徑規劃...")
-        
-        assignments = {}
+    # =========================================================================
+    # 風車式混合演算法 (Windmill Hybrid Algorithm)
+    # =========================================================================
+
+    def _plan_recursive_hybrid(self, N: int, num_uavs: int) -> Dict[int, List[Tuple[int, int]]]:
+        assignments = {i: [] for i in range(num_uavs)}
         occupied = set()
-        N = grid_size
         
-        # ---------------------------------------------------------
-        # Phase 1: 建立骨幹路徑 (UAV 0-1)
-        # ---------------------------------------------------------
-        print("\n[Phase 1] 建立骨幹路徑...")
+        rx, ry = self.rx, self.ry
+        rw, rh = self.rw, self.rh
+        rx_end, ry_end = rx + rw, ry + rh
         
-        if num_uavs >= 1:
-            # UAV 0: 逆時針 (底邊 -> 右邊)
-            # 路徑：(0,0) -> (N-1,0) -> (N-1,N-1)
-            path0 = []
-            for x in range(0, N): 
-                path0.append((x, 0))      # 底邊全長
-            for y in range(1, N): 
-                path0.append((N-1, y))    # 右邊全長
-            assignments[0] = path0
-            occupied.update(path0)
-            print(f"      UAV 0 (骨幹-底+右): {len(path0)} 格點")
+        # =========================================================
+        # Phase 1: 骨幹 (Skeleton) - UAV 0 & 1
+        # =========================================================
+        uav_idx = 0
+        if uav_idx < num_uavs: # UAV 0
+            path = [(x, 0) for x in range(N)] + [(N-1, y) for y in range(1, N)]
+            self._assign_path_windmill(assignments, occupied, uav_idx, path)
+            uav_idx += 1
+        if uav_idx < num_uavs: # UAV 1
+            path = [(0, y) for y in range(N) if (0,y) not in occupied] + \
+                   [(x, N-1) for x in range(1, N-1) if (x,N-1) not in occupied]
+            self._assign_path_windmill(assignments, occupied, uav_idx, path)
+            uav_idx += 1
+
+        # =========================================================
+        # Phase 2: 軌道生成 (嚴格邊界版)
+        # 修正：確保 Right Zone 不會侵占 Top Zone 的角落
+        # =========================================================
+        tracks = {'Left': [], 'Bottom': [], 'Right': [], 'Top': []}
+        virtual_occupied = occupied.copy()
         
-        if num_uavs >= 2:
-            # UAV 1: 順時針 (左邊 -> 頂邊)
-            # 路徑：(0,0) -> (0,N-1) -> (N-2,N-1)
-            path1 = []
-            for y in range(0, N): 
-                if (0, y) not in occupied: 
-                    path1.append((0, y))  # 左邊全長
-            for x in range(1, N-1): 
-                path1.append((x, N-1))    # 頂邊 (扣掉UAV0的終點)
-            assignments[1] = path1
-            occupied.update(path1)
-            print(f"      UAV 1 (骨幹-左+頂): {len(path1)} 格點")
-        
-        # ---------------------------------------------------------
-        # Phase 2: 外環區覆蓋 (Parallel Lane Sweeping)
-        # ---------------------------------------------------------
-        remaining_uavs = num_uavs - 2
-        if remaining_uavs <= 0:
-            return assignments
-        
-        print(f"\n[Phase 2] 外環區覆蓋 (剩餘 {remaining_uavs} 架)...")
-        
-        # 定義四個外環區域邊界線
-        x_in_left = zones['Inner'][0]    # 內環左邊界
-        x_in_right = zones['Inner'][1]   # 內環右邊界
-        y_in_bottom = zones['Inner'][2]  # 內環下邊界
-        y_in_top = zones['Inner'][3]     # 內環上邊界
-        
-        # 定義四個外環區域 (扣掉最外圈骨幹)
-        outer_zones = {
-            # 底部區域 (O_B): 內環下方
-            # X: [1, x_in_right], Y: [1, y_in_bottom]
-            'O_B': {
-                'bounds': (1, x_in_right, 1, y_in_bottom), 
-                'split_axis': 'X',  # 垂直切割（讓每架 UAV 從底部往上）
-                'dir': 'Y_POS'      # 向上推進
-            },
+        # A. Left Zone
+        left_w = max(0, rx - 1)
+        for i in range(left_w):
+            track_x = 1 + i
+            # Clamp: 轉折點最多到內環底部 (ry_end - 1)
+            target_y = min(ry + i, ry_end - 1)
             
-            # 右側區域 (O_R): 內環右方
-            # X: [x_in_right, N-1], Y: [1, y_in_top]
-            'O_R': {
-                'bounds': (x_in_right, N-1, 1, y_in_top), 
-                'split_axis': 'Y',  # 水平切割
-                'dir': 'X_NEG'      # 向左推進（從外往內環）
-            },
+            path = [(track_x, y) for y in range(N-2, target_y-1, -1)]
+            if path and track_x < rx:
+                path.extend([(vx, target_y) for vx in range(track_x+1, rx)])
             
-            # 頂部區域 (O_T): 內環上方
-            # X: [1, x_in_right], Y: [y_in_top, N-1]
-            'O_T': {
-                'bounds': (1, x_in_right, y_in_top, N-1), 
-                'split_axis': 'X',  # 垂直切割
-                'dir': 'Y_NEG'      # 向下推進（從外往內環）
-            },
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Left'].append(path)
+                for p in path: virtual_occupied.add(p)
+
+        # B. Bottom Zone
+        bottom_h = max(0, ry - 1)
+        for i in range(bottom_h):
+            track_y = 1 + i
+            # Clamp: 轉折點最少到內環左緣 (rx)
+            target_x = max(rx, (rx_end - 1) - i)
             
-            # 左側區域 (O_L): 內環左方
-            # X: [1, x_in_left], Y: [1, y_in_top]
-            'O_L': {
-                'bounds': (1, x_in_left, 1, y_in_top), 
-                'split_axis': 'Y',  # 水平切割
-                'dir': 'X_POS'      # 向右推進（從左往內環）
-            }
-        }
-        
-        # 計算每個區域的可用格點
-        zone_valid_cells = {}
-        total_cells = 0
-        
-        for name, info in outer_zones.items():
-            x1, x2, y1, y2 = info['bounds']
-            cells = []
-            if x1 < x2 and y1 < y2:
-                for x in range(x1, x2):
-                    for y in range(y1, y2):
-                        if (x, y) not in occupied and (x, y) not in self.reserved_area:
-                            cells.append((x, y))
-            zone_valid_cells[name] = set(cells)
-            total_cells += len(cells)
-        
-        # 資源分配 (按面積比例)
-        # 優先順序: O_B (近GCS) -> O_L -> O_R -> O_T
-        priority_order = ['O_B', 'O_L', 'O_R', 'O_T']
-        uav_counts = {}
-        
-        # 暫存分配
-        for z in priority_order:
-            area = len(zone_valid_cells[z])
-            if total_cells > 0:
-                count = int(round(remaining_uavs * (area / total_cells)))
-                # 若有面積但分到0，強制給1 (若資源足夠)
-                if area > 0 and count == 0 and remaining_uavs > sum(uav_counts.values()):
-                    count = 1
-            else:
-                count = 0
-            uav_counts[z] = count
-        
-        # 修正總數誤差
-        curr_total = sum(uav_counts.values())
-        while curr_total < remaining_uavs:
-            # 加給最大的區域
-            best = max(priority_order, key=lambda z: len(zone_valid_cells[z]))
-            uav_counts[best] += 1
-            curr_total += 1
-        while curr_total > remaining_uavs:
-            # 從最小的非零區域扣除
-            for z in reversed(priority_order):
-                if uav_counts[z] > 0:
-                    uav_counts[z] -= 1
-                    curr_total -= 1
-                    if curr_total == remaining_uavs: 
-                        break
-        
-        print(f"    外環區域分配：")
-        for z in priority_order:
-            if uav_counts[z] > 0:
-                print(f"      {z}: {uav_counts[z]} UAVs (格點數: {len(zone_valid_cells[z])})")
-        
-        # 產生路徑
-        uav_idx = 2
-        for z in priority_order:
-            k = uav_counts[z]
-            if k == 0: 
-                continue
+            path = [(x, track_y) for x in range(1, target_x+1)]
+            if path and track_y < ry:
+                path.extend([(target_x, vy) for vy in range(track_y+1, ry)])
             
-            info = outer_zones[z]
-            bounds = info['bounds']
-            valid_cells = zone_valid_cells[z]
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Bottom'].append(path)
+                for p in path: virtual_occupied.add(p)
+
+        # C. Right Zone (修正關鍵)
+        right_w = max(0, (N - 1) - rx_end)
+        for i in range(right_w):
+            track_x = (N - 2) - i
+            # Clamp: 轉折點最多到內環上緣 (ry_end - 1)
+            # 絕對不能超過 ry_end - 1，否則會搶走 Top Zone 的地盤
+            target_y = max(ry, (ry_end - 1) - i)
             
-            # 平行通道切割 (Parallel Lane Splitting)
-            sub_regions = self._recursive_partition(bounds, k, info['split_axis'])
+            path = [(track_x, y) for y in range(1, target_y+1)]
+            if path and track_x >= rx_end:
+                path.extend([(vx, target_y) for vx in range(track_x-1, rx_end-1, -1)])
             
-            for sub_bound in sub_regions:
-                path = self._generate_path(sub_bound, info['dir'], valid_cells)
-                if path and uav_idx < num_uavs:
-                    assignments[uav_idx] = path
-                    print(f"      UAV {uav_idx} ({z}): {len(path)} 格點")
-                    uav_idx += 1
-        
-        # 填充空缺的 UAV
-        for i in range(num_uavs):
-            if i not in assignments:
-                assignments[i] = []
-        
-        print(f"\n  ✓ 外圍路徑規劃完成，共 {num_uavs} 台UAV")
-        return assignments
-    
-    def _recursive_partition(self, bounds: Tuple[int, int, int, int], k: int, axis: str) -> List[Tuple]:
-        """遞迴二分切割"""
-        if k <= 1:
-            return [bounds]
-        
-        x1, x2, y1, y2 = bounds
-        k1 = k // 2
-        k2 = k - k1
-        
-        if axis == 'X':  # 垂直切割 (左右分)
-            w = x2 - x1
-            split_w = int(round(w * (k1 / k)))
-            mid = x1 + max(1, split_w)  # 確保至少寬1
-            return self._recursive_partition((x1, mid, y1, y2), k1, axis) + \
-                   self._recursive_partition((mid, x2, y1, y2), k2, axis)
-        else:  # 水平切割 (上下分)
-            h = y2 - y1
-            split_h = int(round(h * (k1 / k)))
-            mid = y1 + max(1, split_h)
-            return self._recursive_partition((x1, x2, y1, mid), k1, axis) + \
-                   self._recursive_partition((x1, x2, mid, y2), k2, axis)
-    
-    def _generate_path(self, bounds: Tuple[int, int, int, int], direction: str) -> List[Tuple[int, int]]:
-        """生成定向方波路徑"""
-        x1, x2, y1, y2 = bounds
-        path = []
-        
-        # O_B (Y_POS): 向上推進 (Y: y1->y2)，主掃描 X
-        # 第一行 (y1) 從左向右 (為了靠近 GCS/骨幹)
-        if direction == 'Y_POS':
-            for y in range(y1, y2):
-                # 偶數行(相對於y1)向右，奇數行向左
-                if (y - y1) % 2 == 0:
-                    xs = range(x1, x2)
-                else:
-                    xs = range(x2-1, x1-1, -1)
-                for x in xs:
-                    path.append((x, y))
-                
-        # O_T (Y_NEG): 向下推進 (Y: y2-1->y1-1)，主掃描 X
-        # 起點 (y2-1) 從左向右 (假設從左側骨幹進入)
-        elif direction == 'Y_NEG':
-            for y in range(y2-1, y1-1, -1):
-                if (y2 - 1 - y) % 2 == 0:
-                    xs = range(x1, x2)
-                else:
-                    xs = range(x2-1, x1-1, -1)
-                for x in xs:
-                    path.append((x, y))
-                
-        # O_L (X_POS): 向右推進 (X: x1->x2)，主掃描 Y
-        # 第一列 (x1) 從下向上 (靠近 GCS)
-        elif direction == 'X_POS':
-            for x in range(x1, x2):
-                if (x - x1) % 2 == 0:
-                    ys = range(y1, y2)
-                else:
-                    ys = range(y2-1, y1-1, -1)
-                for y in ys:
-                    path.append((x, y))
-                
-        # O_R (X_NEG): 向左推進 (X: x2-1->x1-1)，主掃描 Y
-        elif direction == 'X_NEG':
-            for x in range(x2-1, x1-1, -1):
-                if (x2 - 1 - x) % 2 == 0:
-                    ys = range(y1, y2)
-                else:
-                    ys = range(y2-1, y1-1, -1)
-                for y in ys:
-                    path.append((x, y))
-                
-        return path
-    
-    def _plan_zone_paths_OLD(self, zone_name: str, num_uavs: int, 
-                         zone_bounds: Tuple[int, int, int, int], gcs_pos: Tuple[float, float]) -> List[List[Tuple[int, int]]]:
-        """
-        為單一區域規劃路徑
-        
-        Args:
-            zone_name: 區域名稱 (O_B, O_R, O_T, O_L)
-            num_uavs: 分配到此區域的 UAV 數量
-            zone_bounds: (x1, x2, y1, y2) 區域邊界
-            gcs_pos: GCS 位置
-        
-        Returns:
-            List[List[Tuple[int, int]]]: 每台 UAV 的路徑
-        """
-        x1, x2, y1, y2 = zone_bounds
-        w, h = x2 - x1, y2 - y1
-        
-        if w == 0 or h == 0:
-            return [[] for _ in range(num_uavs)]
-        
-        paths = []
-        
-        # 根據區域名稱決定掃描方向
-        if zone_name == 'O_B':  # 底部：水平掃描，從左到右
-            paths = self._plan_horizontal_scan(x1, x2, y1, y2, num_uavs, from_left=True)
-        
-        elif zone_name == 'O_R':  # 右側：垂直掃描，從下到上
-            paths = self._plan_vertical_scan(x1, x2, y1, y2, num_uavs, from_bottom=True)
-        
-        elif zone_name == 'O_T':  # 頂部：水平掃描，從右到左
-            paths = self._plan_horizontal_scan(x1, x2, y1, y2, num_uavs, from_left=False)
-        
-        elif zone_name == 'O_L':  # 左側：垂直掃描，從上到下
-            paths = self._plan_vertical_scan(x1, x2, y1, y2, num_uavs, from_bottom=False)
-        
-        return paths
-    
-    def _plan_horizontal_scan(self, x1: int, x2: int, y1: int, y2: int, num_uavs: int, from_left: bool = True) -> List[List[Tuple[int, int]]]:
-        """水平掃描（蛇形）"""
-        paths = [[] for _ in range(num_uavs)]
-        height = y2 - y1
-        rows_per_uav = max(1, height // num_uavs)
-        
-        for uav_idx in range(num_uavs):
-            start_y = y1 + uav_idx * rows_per_uav
-            end_y = min(start_y + rows_per_uav, y2)
-            if uav_idx == num_uavs - 1:
-                end_y = y2
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Right'].append(path)
+                for p in path: virtual_occupied.add(p)
+
+        # D. Top Zone
+        top_h = max(0, (N - 1) - ry_end)
+        for i in range(top_h):
+            track_y = (N - 2) - i
+            # Clamp: 轉折點最少到內環右緣 (rx_end - 1)
+            target_x = min(rx_end - 1, rx + i)
             
-            for row_idx, y in enumerate(range(start_y, end_y)):
-                if from_left:
-                    x_range = range(x1, x2) if row_idx % 2 == 0 else range(x2-1, x1-1, -1)
-                else:
-                    x_range = range(x2-1, x1-1, -1) if row_idx % 2 == 0 else range(x1, x2)
-                
-                for x in x_range:
-                    paths[uav_idx].append((x, y))
-        
-        return paths
-    
-    def _plan_vertical_scan(self, x1: int, x2: int, y1: int, y2: int, num_uavs: int, from_bottom: bool = True) -> List[List[Tuple[int, int]]]:
-        """垂直掃描（蛇形）"""
-        paths = [[] for _ in range(num_uavs)]
-        width = x2 - x1
-        cols_per_uav = max(1, width // num_uavs)
-        
-        for uav_idx in range(num_uavs):
-            start_x = x1 + uav_idx * cols_per_uav
-            end_x = min(start_x + cols_per_uav, x2)
-            if uav_idx == num_uavs - 1:
-                end_x = x2
+            path = [(x, track_y) for x in range(N-2, target_x-1, -1)]
+            if path and track_y >= ry_end:
+                path.extend([(target_x, vy) for vy in range(track_y-1, ry_end-1, -1)])
             
-            for col_idx, x in enumerate(range(start_x, end_x)):
-                if from_bottom:
-                    y_range = range(y1, y2) if col_idx % 2 == 0 else range(y2-1, y1-1, -1)
-                else:
-                    y_range = range(y2-1, y1-1, -1) if col_idx % 2 == 0 else range(y1, y2)
-                
-                for y in y_range:
-                    paths[uav_idx].append((x, y))
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Top'].append(path)
+                for p in path: virtual_occupied.add(p)
         
-        return paths
-    
-    def _plan_radial_paths_from_inner_boundary(self, search_area: Set[Tuple[int, int]], 
-                                                num_uavs: int,
-                                                gcs_pos: Tuple[float, float]) -> Dict[int, List[Tuple[int, int]]]:
-        """
-        新的外圍路徑規劃邏輯：
-        - UAV 0: 右邊+上方L型（從GCS到最右邊再到最上面）
-        - UAV 1: 上方+右邊反向L型（從最上面到最右邊）
-        - UAV 2-4: 下方矩形L型路徑（從[10,4]→[10,1]→[0,1], [9,4]→[9,2]→[0,2], [8,4]→[8,3]→[0,3]）
-        - UAV 5: 下方矩形水平路徑（[0,4]→[7,4]）
-        - UAV 6-7: 左邊矩形水平掃描（[1-4, 5-10]，2台UAV，高度6）
+        # =========================================================
+        # Phase 3: 資源分配 (Resource Allocation) - 修正：保底分配
+        # 策略：每個有軌道的區域至少分 1 台
+        # =========================================================
+        remaining_uavs = list(range(uav_idx, num_uavs))
         
-        返回: Dict[uav_id, path]
-        """
-        print(f"\n  ✓ 新外圍路徑規劃...")
+        active_zones = [z for z in ['Left', 'Bottom', 'Right', 'Top'] if len(tracks[z]) > 0]
+        allocation = {z: 0 for z in ['Left', 'Bottom', 'Right', 'Top']}
         
-        # 1. 計算網格範圍和保留區邊界
-        cells_list = list(search_area)
-        min_x = min(c[0] for c in cells_list)
-        max_x = max(c[0] for c in cells_list)
-        min_y = min(c[1] for c in cells_list)
-        max_y = max(c[1] for c in cells_list)
-        
-        
-        # 2. 獲取保留區信息
-        if not self.reserved_area:
-            print("    警告：未設置保留區域")
-            return {i: [] for i in range(num_uavs)}
-        
-        reserved_list = list(self.reserved_area)
-        min_rx = min(c[0] for c in reserved_list)
-        max_rx = max(c[0] for c in reserved_list)
-        min_ry = min(c[1] for c in reserved_list)
-        max_ry = max(c[1] for c in reserved_list)
-        
-        print(f"    保留區範圍: X=[{min_rx},{max_rx}], Y=[{min_ry},{max_ry}]")
-        
-        assignments = {}
-        occupied_cells = set()
-        
-        # 3. UAV 0: 底邊+右邊的L型路徑
-        # [0,0] → [11,0] → [11,12]
-        print(f"\n    規劃 UAV 0 (底邊+右邊L型)...")
-        uav0_path = []
-        
-        # 水平段：從左到右 (min_x, min_y) → (max_x, min_y)
-        for x in range(min_x, max_x + 1):
-            cell = (x, min_y)
-            if cell in search_area and cell not in occupied_cells:
-                uav0_path.append(cell)
-                occupied_cells.add(cell)
-        
-        # 垂直段：從下往上 (max_x, min_y+1) → (max_x, max_y)
-        for y in range(min_y + 1, max_y + 1):
-            cell = (max_x, y)
-            if cell in search_area and cell not in occupied_cells:
-                uav0_path.append(cell)
-                occupied_cells.add(cell)
-        
-        assignments[0] = uav0_path
-        print(f"      UAV 0: {len(uav0_path)} 格點, 起點 {uav0_path[0] if uav0_path else 'N/A'}, 終點 {uav0_path[-1] if uav0_path else 'N/A'}")
-        
-        # 4. UAV 1: 左邊+頂邊的L型路徑
-        # [1,0] → [0,0] → [0,12] → [10,12]
-        print(f"\n    規劃 UAV 1 (左邊+頂邊L型)...")
-        uav1_path = []
-        
-        # 先走到左下角 (min_x+1, min_y) → (min_x, min_y)
-        cell = (min_x + 1, min_y)
-        if cell in search_area and cell not in occupied_cells:
-            uav1_path.append(cell)
-            occupied_cells.add(cell)
-        
-        # 垂直段：從下往上 (min_x, min_y+1) → (min_x, max_y)
-        for y in range(min_y + 1, max_y + 1):
-            cell = (min_x, y)
-            if cell in search_area and cell not in occupied_cells:
-                uav1_path.append(cell)
-                occupied_cells.add(cell)
-        
-        # 水平段：從左到右 (min_x+1, max_y) → (max_x-1, max_y)
-        for x in range(min_x + 1, max_x):
-            cell = (x, max_y)
-            if cell in search_area and cell not in occupied_cells:
-                uav1_path.append(cell)
-                occupied_cells.add(cell)
-        
-        assignments[1] = uav1_path
-        print(f"      UAV 1: {len(uav1_path)} 格點, 起點 {uav1_path[0] if uav1_path else 'N/A'}, 終點 {uav1_path[-1] if uav1_path else 'N/A'}")
-        
-        # 5. UAV 2-5: 下方矩形 L型路徑（4台UAV，不包含UAV 0）
-        # 前3條: L型路徑，從GCS附近出發
-        # 最後1條: 水平路徑
-        print(f"\n    規劃 UAV 2-5 (下方矩形路徑)...")
-        
-        if num_uavs >= 6:  # 確保有UAV 2-5
-            num_bottom_uavs = 4
+        if active_zones and remaining_uavs:
+            k_total = len(remaining_uavs)
+            k_current = k_total
             
-            # 為每台UAV規劃路徑
-            # UAV 2: L型 從 [1, 1] → [10, 1] → [10, 4]
-            # UAV 3: L型 從 [1, 2] → [9, 2] → [9, 4]
-            # UAV 4: L型 從 [1, 3] → [8, 3] → [8, 4]
-            # UAV 5: 水平 從 [1, 4] → [7, 4]
+            # [Step 1] 保底分配：先發 1 台給每個區域
+            for zone in active_zones:
+                if k_current > 0:
+                    allocation[zone] = 1
+                    k_current -= 1
             
-            for uav_idx in range(num_bottom_uavs):
-                uav_id = 2 + uav_idx
-                path = []
-                
-                if uav_idx < 3:  # UAV 2, 3, 4 - L型路徑（從GCS附近開始）
-                    target_y = min_y + 1 + uav_idx  # 1, 2, 3
-                    start_x = min_x + 1             # 都從 1 開始
-                    end_x = max_x - uav_idx         # 10, 9, 8
-                    
-                    print(f"      規劃 UAV {uav_id}: L型 從 [{start_x}, {target_y}] → [{end_x}, {target_y}] → [{end_x}, {min_ry-1}]")
-                    
-                    # 水平段：從左到右
-                    for x in range(start_x, end_x + 1):
-                        cell = (x, target_y)
-                        if cell in search_area and cell not in occupied_cells:
-                            path.append(cell)
-                            occupied_cells.add(cell)
-                    
-                    # 垂直段：從下往上到保留區下方
-                    if path:
-                        current_x = path[-1][0]
-                        for y in range(target_y + 1, min_ry):
-                            cell = (current_x, y)
-                            if cell in search_area and cell not in occupied_cells:
-                                path.append(cell)
-                                occupied_cells.add(cell)
-                
-                else:  # UAV 5 - 水平路徑（最後一行）
-                    target_y = min_ry - 1  # 保留區下方一行 (4)
-                    start_x = min_x + 1    # 從 1 開始
-                    end_x = max_x - 3      # 7 (因為 10, 9, 8 已被其他UAV使用)
-                    
-                    print(f"      規劃 UAV {uav_id}: 水平 從 [{start_x}, {target_y}] → [{end_x}, {target_y}]")
-                    
-                    # 水平段：從左到右
-                    for x in range(start_x, end_x + 1):
-                        cell = (x, target_y)
-                        if cell in search_area and cell not in occupied_cells:
-                            path.append(cell)
-                            occupied_cells.add(cell)
-                
-                assignments[uav_id] = path
-                print(f"        UAV {uav_id}: {len(path)} 格點, 起點 {path[0] if path else 'N/A'}, 終點 {path[-1] if path else 'N/A'}")
-        
-        # 6. UAV 6-11: 左邊矩形 [1-4, 5-10] 水平掃描（最多6台UAV，取決於num_uavs）
-        # 左邊矩形高度為6（Y=5到10），最多支援6台UAV（每台1行）
-        # 總計：UAV 0-1（外圍）+ UAV 2-5（下方矩形4台）+ UAV 6-11（左邊矩形6台）= 12台
-        print(f"\n    規劃 UAV 6-11 (左邊矩形 [1-4, 5-10])...")
-        
-        # 定義左邊矩形範圍：X=[1,4], Y=[5,10]
-        left_rect_x = list(range(1, 5))    # [1, 2, 3, 4]
-        left_rect_y = list(range(5, 11))   # [5, 6, 7, 8, 9, 10]
-        
-        # 收集左邊矩形中未被佔用的格點
-        left_rect_cells = {(x, y) for x in left_rect_x for y in left_rect_y 
-                          if (x, y) in search_area and (x, y) not in occupied_cells}
-        
-        if left_rect_cells and num_uavs >= 7:  # 至少需要7台UAV才有UAV 6
-            # 計算需要多少台UAV來覆蓋左邊矩形
-            # UAV 0-1（外圍）+ UAV 2-5（下方4台）已使用6台，左邊矩形可用 num_uavs - 6 台
-            num_left_uavs = min(num_uavs - 6, 6)  # 最多6台（左邊矩形高度為6）
-            left_height = len(left_rect_y)  # 6行
-            
-            # 每台UAV負責的行數（盡量平均分配）
-            rows_per_uav = max(1, left_height // num_left_uavs)
-            
-            print(f"      左邊矩形高度: {left_height}, 分配 {num_left_uavs} 台UAV, 每台約 {rows_per_uav} 行")
-            
-            for uav_idx in range(num_left_uavs):
-                uav_id = 6 + uav_idx
-                
-                # 確定此UAV負責的行
-                start_y = min(left_rect_y) + uav_idx * rows_per_uav
-                end_y = min(start_y + rows_per_uav - 1, max(left_rect_y))
-                if uav_idx == num_left_uavs - 1:
-                    end_y = max(left_rect_y)  # 最後一台UAV負責剩餘所有行
-                
-                print(f"      規劃 UAV {uav_id}: Y=[{start_y},{end_y}]")
-                
-                # 水平掃描（蛇形）
-                path = []
-                for row_idx, y in enumerate(range(start_y, end_y + 1)):
-                    if row_idx % 2 == 0:
-                        # 偶數行：從左到右
-                        x_range = left_rect_x
+            # [Step 2] 剩餘分配：按軌道比例
+            if k_current > 0:
+                total_active_tracks = sum(len(tracks[z]) for z in active_zones)
+                for i, zone in enumerate(active_zones):
+                    if i == len(active_zones) - 1:
+                        allocation[zone] += k_current
                     else:
-                        # 奇數行：從右到左
-                        x_range = reversed(left_rect_x)
-                    
-                    for x in x_range:
-                        cell = (x, y)
-                        if cell in left_rect_cells and cell not in occupied_cells:
-                            path.append(cell)
-                            occupied_cells.add(cell)
+                        ratio = len(tracks[zone]) / total_active_tracks
+                        extra = int(round(k_current * ratio))
+                        if extra > k_current: extra = k_current
+                        allocation[zone] += extra
+                        k_current -= extra
+
+            # 執行遞迴求解
+            uav_ptr = 0
+            zones_order = ['Left', 'Bottom', 'Right', 'Top']
+            
+            print(f"\n[資源分配] 剩餘UAV: {k_total}")
+            for zone in zones_order:
+                n_tracks = len(tracks[zone])
+                n_uavs = allocation[zone]
                 
-                assignments[uav_id] = path
-                print(f"        UAV {uav_id}: {len(path)} 格點, 起點 {path[0] if path else 'N/A'}, 終點 {path[-1] if path else 'N/A'}")
-        
-        # 7. 填充空缺的UAV（如果有）
-        for uav_id in range(num_uavs):
-            if uav_id not in assignments:
-                assignments[uav_id] = []
-        
-        print(f"\n  ✓ 外圍路徑規劃完成，共 {num_uavs} 台UAV")
-        for uav_id in range(num_uavs):
-            path_len = len(assignments[uav_id])
-            print(f"    UAV {uav_id}: {path_len} 格點")
-        
+                zone_uav_ids = remaining_uavs[uav_ptr : uav_ptr + n_uavs]
+                uav_ptr += n_uavs
+                
+                print(f"  > {zone}區: 軌道H={n_tracks}, 分配K={n_uavs}")
+                
+                if n_tracks > 0 and n_uavs > 0:
+                    self._solve_recursive_partition(zone_uav_ids, tracks[zone], assignments, occupied, zone)
+
         return assignments
 
+    def _solve_recursive_partition(self, uav_ids: List[int], tracks: List[List[Tuple]], 
+                                  assignments: Dict, occupied: Set, zone_name: str):
+        k = len(uav_ids)
+        h = len(tracks)
+        if h == 0: return
+
+        # A. 資源不足 (K < H) -> 終點導向 Zigzag
+        if k < h:
+            if k <= 1:
+                uav = uav_ids[0] if k == 1 else None
+                if uav is not None:
+                    path = []
+                    num_sub = len(tracks)
+                    for i in range(num_sub):
+                        track = tracks[i]
+                        # 終點回推邏輯
+                        dist_from_end = (num_sub - 1) - i
+                        if dist_from_end % 2 == 0: path.extend(track)
+                        else: path.extend(track[::-1])
+                    self._assign_path_windmill(assignments, occupied, uav, path)
+            else:
+                h1 = int(np.ceil(h / 2))
+                k1 = int(np.ceil(k / 2))
+                self._solve_recursive_partition(uav_ids[:k1], tracks[:h1], assignments, occupied, zone_name)
+                self._solve_recursive_partition(uav_ids[k1:], tracks[h1:], assignments, occupied, zone_name)
+        
+        # B. 資源充足 (K >= H) -> L形切分
+        else:
+            base = k // h
+            rem = k % h
+            ptr = 0
+            for i in range(h):
+                n = base + (1 if i < rem else 0)
+                us = uav_ids[ptr : ptr + n]
+                ptr += n
+                track = tracks[i]
+                sz = int(np.ceil(len(track) / n))
+                for j, u in enumerate(us):
+                    s, e = j*sz, min((j+1)*sz, len(track))
+                    if s < len(track):
+                        self._assign_path_windmill(assignments, occupied, u, track[s:e])
+
+    def _assign_path_windmill(self, assignments, occupied, uav_id, path):
+        valid_path = [p for p in path if p not in occupied and p not in self.reserved_area]
+        if valid_path:
+            assignments[uav_id] = valid_path
+            for p in valid_path: occupied.add(p)
 
 class TwoOptTSPPlanner:
     """2-Opt TSP + 優化切割"""
@@ -1033,24 +432,28 @@ class TwoOptTSPPlanner:
     
     def _greedy_tsp(self, cells: List[Tuple[int, int]], 
                     start_pos: Tuple[float, float]) -> List[Tuple[int, int]]:
-        """貪心 TSP"""
+        """貪心 TSP 初始化：從起點開始，每次選擇最近的未訪問格點"""
         if not cells:
             return []
+        if len(cells) == 1:
+            return cells
         
-        remaining = set(cells)
-        path = []
+        def distance(p1, p2):
+            return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
         
-        current = min(remaining, key=lambda c: abs(c[0] - start_pos[0]) + abs(c[1] - start_pos[1]))
+        unvisited = set(cells)
+        route = []
+        current_pos = start_pos
         
-        while remaining:
-            path.append(current)
-            remaining.remove(current)
-            
-            if remaining:
-                current = min(remaining, 
-                            key=lambda c: abs(c[0] - current[0]) + abs(c[1] - current[1]))
+        while unvisited:
+            # 找到最近的未訪問格點
+            nearest = min(unvisited, key=lambda cell: distance(current_pos, cell))
+            route.append(nearest)
+            unvisited.remove(nearest)
+            current_pos = nearest
         
-        return path
+        return route
+    
     
     def _split_path_optimized(self, full_path: List[Tuple[int, int]], K: int,
                               gcs_pos: Tuple[float, float]) -> Dict[int, List[Tuple[int, int]]]:
@@ -1871,34 +1274,32 @@ def print_detailed_comparison(results: List[Dict]):
 # 主測試
 # ============================================================================
 
-def run_comparison(grid_size=12, num_uavs=12, seed=42, max_time=500.0, use_donut=False,
-                   reserved_x=None, reserved_y=None, reserved_width=6, reserved_height=6):
+def run_comparison(grid_size=12, num_uavs=12, seed=42, max_time=500.0,
+                   reserved_x=None, reserved_y=None, reserved_width=4, reserved_height=4):
     """運行對比測試"""
     print("="*70)
-    print("簡化版對比測試：方波 vs 2-Opt TSP")
+    print("簡化版對比測試：風車式混合演算法 vs 2-Opt TSP")
     print("="*70)
     print(f"場景: {grid_size}×{grid_size} 網格, {num_uavs} UAVs")
-    print(f"甜甜圈策略: {'啟用' if use_donut else '停用'}")
-    if use_donut:
-        if reserved_x is not None and reserved_y is not None:
-            print(f"內環區設定: 位置({reserved_x}, {reserved_y}), 大小 {reserved_width}x{reserved_height}")
-        else:
-            print(f"內環區設定: 自動位置（右上角）, 大小 {reserved_width}x{reserved_height}")
+    if reserved_x is not None and reserved_y is not None:
+        print(f"內環區設定: 位置({reserved_x}, {reserved_y}), 大小 {reserved_width}x{reserved_height}")
+    else:
+        print(f"內環區設定: 自動位置（右上角）, 大小 {reserved_width}x{reserved_height}")
     
     results = []
     
-    # 方法 1: 方波 + 優化切割
+    # 方法 1: 風車式混合演算法
     print(f"\n{'#'*70}")
-    print("方法 1: 方波 + 優化切割")
+    print("方法 1: 風車式混合演算法 (Windmill Hybrid)")
     print('#'*70)
     
     env1 = Environment(grid_size, num_uavs, seed=seed)
     
-    planner1 = BoustrophedonPlanner(speed=1.0, use_donut_strategy=use_donut,
+    planner1 = BoustrophedonPlanner(speed=1.0,
                                      reserved_x=reserved_x, reserved_y=reserved_y,
                                      reserved_width=reserved_width, reserved_height=reserved_height)
     # 方法1：只覆蓋外圍，不進行目標分配和訪問
-    sim1 = Simulator(env1, planner1, "方波+優化切割", enable_target_assignment=False)
+    sim1 = Simulator(env1, planner1, "風車式混合演算法", enable_target_assignment=False)
     result1 = sim1.run(max_time=max_time)
     result1['planner'] = planner1  # 保存 planner 引用供可視化使用
     results.append(result1)
@@ -1928,12 +1329,12 @@ def run_comparison(grid_size=12, num_uavs=12, seed=42, max_time=500.0, use_donut
     
     improvement = (result2['makespan'] - result1['makespan']) / result2['makespan'] * 100
     if improvement > 0:
-        print(f"    → 方波快 {improvement:.1f}%")
+        print(f"    → 風車式快 {improvement:.1f}%")
     else:
         print(f"    → 2-Opt快 {-improvement:.1f}%")
     
     print(f"\n  規劃時間:")
-    print(f"    方波:     {result1['planning_time']:.2f} ms")
+    print(f"    風車式:   {result1['planning_time']:.2f} ms")
     print(f"    2-Opt:    {result2['planning_time']:.2f} ms")
     
     # 詳細對比表格
@@ -1941,35 +1342,60 @@ def run_comparison(grid_size=12, num_uavs=12, seed=42, max_time=500.0, use_donut
     
     # 生成路徑可視化
     scenario_name = f"{grid_size}x{grid_size}_K{num_uavs}"
-    if use_donut:
-        scenario_name += "_donut"
     visualize_paths(results, save_name=f"paths_{scenario_name}.png")
     
     return results
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='簡化版路徑規劃對比測試')
-    parser.add_argument('--grid-size', type=int, default=12, help='網格大小')
-    parser.add_argument('--num-uavs', type=int, default=12, help='UAV 數量')
+    parser = argparse.ArgumentParser(description='簡化版路徑規劃對比測試 - 風車式混合演算法')
+    parser.add_argument('--grid', '--grid-size', dest='grid_size', type=int, default=12, help='網格大小')
+    parser.add_argument('--uavs', '--num-uavs', dest='num_uavs', type=int, default=12, help='UAV 數量')
     parser.add_argument('--seed', type=int, default=42, help='隨機種子')
     parser.add_argument('--max-time', type=float, default=500.0, help='最大模擬時間')
-    parser.add_argument('--donut', action='store_true', help='啟用甜甜圈策略')
-    parser.add_argument('--reserved-x', type=int, default=None, help='內環區左下角 X 座標（默認：自動計算為右上角）')
-    parser.add_argument('--reserved-y', type=int, default=None, help='內環區左下角 Y 座標（默認：自動計算為右上角）')
+    parser.add_argument('--reserved-x', type=int, default=None, help='內環區左下角 X 座標（默認：自動計算）')
+    parser.add_argument('--reserved-y', type=int, default=None, help='內環區左下角 Y 座標（默認：自動計算）')
     parser.add_argument('--reserved-width', type=int, default=6, help='內環區寬度（默認：6）')
-    parser.add_argument('--reserved-height', type=int, default=6, help='內環區高度（默認：6）')
+    parser.add_argument('--reserved-height', type=int, default=4, help='內環區高度（默認：6）')
+    parser.add_argument('--position', type=str, default='center', 
+                        choices=['right-top', 'left-top', 'left-bottom', 'right-bottom', 'center'],
+                        help='內環區位置（right-top=右上, left-top=左上, left-bottom=左下, right-bottom=右下, center=正中間）')
     
     args = parser.parse_args()
+    
+    # 根據 position 參數自動計算內環區座標
+    if args.reserved_x is None or args.reserved_y is None:
+        if args.position == 'right-top':
+            # 右上角：距離邊界1格
+            reserved_x = args.grid_size - args.reserved_width - 1
+            reserved_y = args.grid_size - args.reserved_height - 1
+        elif args.position == 'left-top':
+            # 左上角：距離邊界1格
+            reserved_x = 1
+            reserved_y = args.grid_size - args.reserved_height - 1
+        elif args.position == 'left-bottom':
+            # 左下角：距離邊界1格
+            reserved_x = 1
+            reserved_y = 1
+        elif args.position == 'right-bottom':
+            # 右下角：距離邊界1格
+            reserved_x = args.grid_size - args.reserved_width - 1
+            reserved_y = 1
+        elif args.position == 'center':
+            # 正中間：置中
+            reserved_x = (args.grid_size - args.reserved_width) // 2
+            reserved_y = (args.grid_size - args.reserved_height) // 2
+    else:
+        reserved_x = args.reserved_x
+        reserved_y = args.reserved_y
     
     run_comparison(
         grid_size=args.grid_size,
         num_uavs=args.num_uavs,
         seed=args.seed,
         max_time=args.max_time,
-        use_donut=args.donut,
-        reserved_x=args.reserved_x,
-        reserved_y=args.reserved_y,
+        reserved_x=reserved_x,
+        reserved_y=reserved_y,
         reserved_width=args.reserved_width,
         reserved_height=args.reserved_height
     )

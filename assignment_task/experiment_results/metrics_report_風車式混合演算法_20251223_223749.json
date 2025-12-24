@@ -1,0 +1,121 @@
+{
+  "metadata": {
+    "timestamp": "2025-12-23T22:37:49.487729",
+    "makespan": 21.10000000000003,
+    "total_events": 13
+  },
+  "data1_outer_coverage": {
+    "phase1_completion": null,
+    "per_uav": [
+      {
+        "uav_id": 0,
+        "outer_complete_time": 19.4,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 1,
+        "outer_complete_time": 18.2,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 2,
+        "outer_complete_time": 15.7,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 3,
+        "outer_complete_time": 18.0,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 4,
+        "outer_complete_time": 21.1,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 5,
+        "outer_complete_time": 14.8,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 6,
+        "outer_complete_time": 11.3,
+        "advance_before_phase1": null
+      },
+      {
+        "uav_id": 7,
+        "outer_complete_time": 15.2,
+        "advance_before_phase1": null
+      }
+    ]
+  },
+  "data2_inner_selection_order": {
+    "completion_order": [
+      {
+        "rank": 1,
+        "uav_id": 6,
+        "complete_time": 11.3,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 2,
+        "uav_id": 5,
+        "complete_time": 14.8,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 3,
+        "uav_id": 7,
+        "complete_time": 15.2,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 4,
+        "uav_id": 2,
+        "complete_time": 15.7,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 5,
+        "uav_id": 3,
+        "complete_time": 18.0,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 6,
+        "uav_id": 1,
+        "complete_time": 18.2,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 7,
+        "uav_id": 0,
+        "complete_time": 19.4,
+        "selected_for_inner": false
+      },
+      {
+        "rank": 8,
+        "uav_id": 4,
+        "complete_time": 21.1,
+        "selected_for_inner": false
+      }
+    ],
+    "inner_selected_uavs": [],
+    "inner_uav_ranks": []
+  },
+  "data3_known_targets": {
+    "phase1_completion_time": null,
+    "discovered_count": 0,
+    "targets": []
+  },
+  "data4_inner_efficiency": {
+    "error": "No inner UAVs selected"
+  },
+  "data5_max_assignment_distance": {
+    "error": "No assignments recorded"
+  },
+  "data6_utilization": {
+    "makespan": 21.10000000000003,
+    "per_uav": []
+  }
+}
