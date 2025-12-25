@@ -1,0 +1,1079 @@
+"""
+進階風車式演算法 - 內環覆蓋 + 監視邏輯
+整合功能：
+1. 進階內環排程器 (時間/成本決策)
+2. 監控調度器 (目標分配策略)
+3. 多階段UAV狀態機
+4. 象限管理系統
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Dict, Tuple, Set, Optional
+import time
+import random
+import math
+from enum import Enum
+from dataclasses import dataclass
+
+# 設定中文字體
+try:
+    plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'SimHei', 'Arial']
+    plt.rcParams['axes.unicode_minus'] = False
+except:
+    pass
+
+# ============================================================================
+# 1. 基礎定義 (Basic Definitions)
+# ============================================================================
+
+class Quadrant(Enum):
+    TOP_LEFT = 1
+    TOP_RIGHT = 2
+    BOTTOM_LEFT = 3
+    BOTTOM_RIGHT = 4
+
+class BlockStatus(Enum):
+    WHITE = 0  # 未搶占
+    YELLOW = 1 # 執行中 (Active)
+    GREEN = 2  # 已完成
+
+class UAVStatus(Enum):
+    OUTER_SEARCHING = 1    # 正在執行外環 L 形搜尋
+    WAITING_FOR_UNLOCK = 2 # 搜尋完畢，原地懸停，等待依賴對象 (內層) 解鎖
+    TRANSITING = 3         # 決定進入內環，正在飛往入口
+    AWAITING_ENTRY = 4     # 抵達內環入口，請求搶占
+    INNER_SEARCHING = 5    # 搶占成功，執行內環搜尋
+    MONITORING_QUEUE = 6   # 準備接取監控任務
+    MONITORING = 7         # 正在前往/執行監控任務
+    FOLLOWING = 8          # 跟隨模式
+    DONE = 9               # 任務結束
+
+@dataclass
+class BlockInfo:
+    quadrant: Quadrant
+    row_idx: int
+    status: BlockStatus = BlockStatus.WHITE
+    owner_id: Optional[int] = None
+    end_time: float = float('inf')            # 預計完工時間
+    end_pos: Optional[Tuple[int, int]] = None # 完工時的座標
+
+@dataclass
+class Target:
+    id: int
+    pos: Tuple[float, float]
+    is_inner: bool
+    quadrant: Quadrant
+    discovered: bool = False
+    is_monitored: bool = False
+    monitored_by: Optional[int] = None
+
+class UAV:
+    def __init__(self, id: int):
+        self.id = id
+        self.position = (0.5, 0.5)
+        self.status = UAVStatus.OUTER_SEARCHING
+        self.path: List[Tuple[int, int]] = [] 
+        self.path_index = 0
+        
+        self.found_target_during_search = False
+        self.target_entry_point = None
+        self.entry_quadrant = None
+        self.assigned_target = None
+        self.assigned_leader_id = None
+        
+        self.history_outer = []
+        self.history_transit = []
+        self.history_inner = []
+        self.history_monitor = []
+        self.history_follow = []
+        
+        # 距離統計
+        self.total_distance = 0.0
+
+# ============================================================================
+# 2. 進階內環排程器 (Advanced Scheduler - Time/Cost Logic)
+# ============================================================================
+
+class AdvancedInnerRingScheduler:
+    def __init__(self, rx, ry, rw, rh):
+        self.rx, self.ry = rx, ry
+        self.rw, self.rh = rw, rh
+        self.center_x = rx + rw // 2
+        self.center_y = ry + rh // 2
+        
+        # 容量计算：依「列(Row)」进行水平扫描，所以容量取决于「高度(rh)」
+        self.capacity = max(1, rh // 2)
+        
+        # Block 状态管理 (Green完成, Yellow执行中, White未抢占)
+        self.blocks: Dict[Tuple[Quadrant, int], BlockInfo] = {}
+        for q in Quadrant:
+            for i in range(self.capacity):
+                self.blocks[(q, i)] = BlockInfo(q, i)
+        
+        self.neighbors = {
+            Quadrant.TOP_LEFT: [Quadrant.TOP_RIGHT, Quadrant.BOTTOM_LEFT],
+            Quadrant.TOP_RIGHT: [Quadrant.TOP_LEFT, Quadrant.BOTTOM_RIGHT],
+            Quadrant.BOTTOM_LEFT: [Quadrant.BOTTOM_RIGHT, Quadrant.TOP_LEFT],
+            Quadrant.BOTTOM_RIGHT: [Quadrant.BOTTOM_LEFT, Quadrant.TOP_RIGHT]
+        }
+
+    def determine_quadrant(self, x, y):
+        """根据坐标判断属于哪个象限"""
+        if x < self.center_x:
+            return Quadrant.BOTTOM_LEFT if y < self.center_y else Quadrant.TOP_LEFT
+        else:
+            return Quadrant.BOTTOM_RIGHT if y < self.center_y else Quadrant.TOP_RIGHT
+
+    def is_fully_locked(self):
+        """检查是否所有block都已被抢占（无White）"""
+        return all(b.status != BlockStatus.WHITE for b in self.blocks.values())
+    
+    def mark_task_complete(self, uav_id: int):
+        """UAV完成内环路径时，Yellow → Green"""
+        for block in self.blocks.values():
+            if block.owner_id == uav_id and block.status == BlockStatus.YELLOW:
+                block.status = BlockStatus.GREEN
+                break
+
+    def request_access(self, uav: UAV, current_time: float) -> Tuple[bool, List[Tuple[int, int]]]:
+        """
+        投影片 Step 1-4 决策逻辑：
+        1. 白区充足 → 直接分派
+        2. 抢占过半但黄色少 → 仍分派
+        3. 时间竞赛 → 比较 Cost_Existing vs Cost_New
+        """
+        white_blocks = [b for b in self.blocks.values() if b.status == BlockStatus.WHITE]
+        yellow_blocks = [b for b in self.blocks.values() if b.status == BlockStatus.YELLOW]
+        green_blocks = [b for b in self.blocks.values() if b.status == BlockStatus.GREEN]
+        
+        n_white = len(white_blocks)
+        n_snatched = len(yellow_blocks) + len(green_blocks)
+        n_yellow = len(yellow_blocks)
+        
+        # 情况 A: 白色 > 已抢占
+        if n_white > n_snatched:
+            return self._assign_block(uav, current_time)
+        
+        # 情况 B: 黄色 < 白色
+        if n_yellow < n_white:
+            return self._assign_block(uav, current_time)
+        
+        # 情况 C: 时间竞赛
+        target_block, target_path = self._find_best_white_block(uav)
+        if not target_block:
+            return False, []  # 没有白色block了
+        
+        # Cost_New: 新机从当前位置飞过去
+        start_pos = target_path[0]
+        dist_new = np.linalg.norm(np.array(uav.position) - np.array(start_pos))
+        cost_new = current_time + dist_new
+        
+        # Cost_Existing: 找最快完成并飞过来的旧机
+        min_cost_existing = float('inf')
+        for b in yellow_blocks:
+            if b.end_pos:
+                dist_exist = np.linalg.norm(np.array(b.end_pos) - np.array(start_pos))
+                cost_existing = b.end_time + dist_exist
+                if cost_existing < min_cost_existing:
+                    min_cost_existing = cost_existing
+        
+        # 判断：Cost_Existing < Cost_New → 拒绝（让旧机做更有效率）
+        if min_cost_existing < cost_new:
+            return False, []  # 拒绝，原地等待
+        
+        # Cost_New 更优，分派任务
+        return self._assign_block(uav, current_time)
+
+    def _assign_block(self, uav: UAV, current_time: float) -> Tuple[bool, List[Tuple[int, int]]]:
+        """实际分配block"""
+        target_block, target_path = self._find_best_white_block(uav)
+        if not target_block:
+            return False, []
+        
+        # 更新 Block 状态
+        target_block.status = BlockStatus.YELLOW
+        target_block.owner_id = uav.id
+        
+        # 估算完成时间
+        dist_to_start = np.linalg.norm(np.array(uav.position) - np.array(target_path[0]))
+        target_block.end_time = current_time + dist_to_start + len(target_path)
+        target_block.end_pos = target_path[-1]
+        
+        return True, target_path
+
+    def _find_best_white_block(self, uav: UAV) -> Tuple[Optional[BlockInfo], List[Tuple[int, int]]]:
+        """寻找本象限或邻居象限的第一个白色block"""
+        if not uav.entry_quadrant:
+            uav.entry_quadrant = Quadrant.TOP_LEFT
+        
+        q_order = [uav.entry_quadrant] + self.neighbors[uav.entry_quadrant]
+        for q in q_order:
+            for i in range(self.capacity):
+                block = self.blocks[(q, i)]
+                if block.status == BlockStatus.WHITE:
+                    path = self._generate_path_coords(q, i)
+                    return block, path
+        return None, []
+
+    def _generate_path_coords(self, q: Quadrant, idx: int) -> List[Tuple[int, int]]:
+        """
+        混合象限掃描策略：
+        - 左側象限 (TOP_LEFT, BOTTOM_LEFT): 水平掃描 (Horizontal)
+        - 右側象限 (TOP_RIGHT, BOTTOM_RIGHT): 垂直掃描 (Vertical)
+        
+        這樣能讓無人機從外環銜接內環時，路徑方向順著飛行動量，
+        避免大角度轉向，產生流暢的「旋風式」路徑流向。
+        """
+        path = []
+        rx, ry, rw, rh = self.rx, self.ry, self.rw, self.rh
+        
+        # 定義邊界
+        x_left_start, x_left_end = rx, rx + rw // 2
+        x_right_start, x_right_end = rx + rw - 1, rx + rw // 2 - 1
+        y_bottom_start, y_bottom_end = ry, ry + rh // 2
+        y_top_start, y_top_end = ry + rh - 1, ry + rh // 2 - 1
+
+        # --- 左側象限：水平掃描 (Horizontal) ---
+        if q == Quadrant.TOP_LEFT:
+            y = (ry + rh - 1) - idx
+            # 蛇行邏輯：偶數列從左到右，奇數列從右到左
+            if idx % 2 == 0:
+                path = [(x, y) for x in range(x_left_start, x_left_end)]
+            else:
+                path = [(x, y) for x in range(x_left_end - 1, x_left_start - 1, -1)]
+                
+        elif q == Quadrant.BOTTOM_LEFT:
+            y = ry + idx
+            if idx % 2 == 0:
+                path = [(x, y) for x in range(x_left_start, x_left_end)]
+            else:
+                path = [(x, y) for x in range(x_left_end - 1, x_left_start - 1, -1)]
+
+        # --- 右側象限：垂直掃描 (Vertical) ---
+        elif q == Quadrant.TOP_RIGHT:
+            x = (rx + rw - 1) - idx
+            # 蛇行邏輯：偶數列從上到下，奇數列從下到上
+            if idx % 2 == 0:
+                path = [(x, y) for y in range(ry + rh - 1, ry + rh // 2 - 1, -1)]
+            else:
+                path = [(x, y) for y in range(ry + rh // 2, ry + rh)]
+                
+        elif q == Quadrant.BOTTOM_RIGHT:
+            x = (rx + rw - 1) - idx
+            if idx % 2 == 0:
+                path = [(x, y) for y in range(ry, ry + rh // 2)]
+            else:
+                path = [(x, y) for y in range(ry + rh // 2 - 1, ry - 1, -1)]
+        
+        return path
+
+# ============================================================================
+# 3. 監控調度器 (Monitoring Dispatcher)
+# ============================================================================
+
+class MonitoringDispatcher:
+    def __init__(self, gcs_pos, inner_bounds):
+        self.targets: List[Target] = []
+        self.gcs_pos = gcs_pos
+        self.rx, self.ry, self.rw, self.rh = inner_bounds
+        self.mapping = {
+            Quadrant.TOP_LEFT: Quadrant.TOP_LEFT,
+            Quadrant.TOP_RIGHT: Quadrant.TOP_RIGHT,
+            Quadrant.BOTTOM_LEFT: Quadrant.BOTTOM_LEFT,
+            Quadrant.BOTTOM_RIGHT: Quadrant.BOTTOM_RIGHT
+        }
+
+    def add_target(self, t: Target):
+        self.targets.append(t)
+    
+    def _dist_to_gcs(self, t: Target):
+        return math.sqrt((t.pos[0]-self.gcs_pos[0])**2 + (t.pos[1]-self.gcs_pos[1])**2)
+    
+    def _get_inner_layer_score(self, t: Target):
+        x, y = int(t.pos[0]), int(t.pos[1])
+        is_border = (x==self.rx) or (x==self.rx+self.rw-1) or (y==self.ry) or (y==self.ry+self.rh-1)
+        return 2 if is_border else 1
+    
+    def has_unmonitored_targets(self):
+        return any(not t.is_monitored and t.discovered for t in self.targets)
+
+    def assign_task(self, uav_id: int, uav_quadrant: Quadrant, all_uavs: List[UAV]) -> Tuple[str, any]:
+        pool = [t for t in self.targets if not t.is_monitored and t.discovered]
+        if not pool:
+            searchers = [u for u in all_uavs if u.status in [UAVStatus.OUTER_SEARCHING, UAVStatus.INNER_SEARCHING]]
+            if searchers:
+                return "FOLLOW", random.choice(searchers).id
+            return "DONE", None
+
+        best = None
+        target_zone = self.mapping.get(uav_quadrant, Quadrant.TOP_LEFT)
+        
+        # A. 責任區
+        cands = [t for t in pool if not t.is_inner and t.quadrant == target_zone]
+        if cands:
+            best = max(cands, key=self._dist_to_gcs)
+        
+        # B. 支援區
+        if not best:
+            cands = [t for t in pool if not t.is_inner]
+            if cands:
+                best = max(cands, key=self._dist_to_gcs)
+        
+        # C. 內環
+        if not best:
+            cands = [t for t in pool if t.is_inner]
+            if cands:
+                best = max(cands, key=lambda t: (self._get_inner_layer_score(t), self._dist_to_gcs(t)))
+
+        if best:
+            best.is_monitored = True
+            best.monitored_by = uav_id
+            return "TARGET", best
+        return "DONE", None
+
+# ============================================================================
+# 4. 規劃器 (Planner) - 全覆蓋 + 遞迴
+# ============================================================================
+
+class BoustrophedonPlanner:
+    def __init__(self, reserved_x=None, reserved_y=None, reserved_w=6, reserved_h=6):
+        self.reserved_x = reserved_x
+        self.reserved_y = reserved_y
+        self.rw = reserved_w
+        self.rh = reserved_h
+        self.reserved_area = set()
+        
+    def _init_geometry(self, N):
+        if self.reserved_x is None:
+            self.rx = (N - self.rw) // 2
+        else:
+            self.rx = self.reserved_x
+        if self.reserved_y is None:
+            self.ry = (N - self.rh) // 2
+        else:
+            self.ry = self.reserved_y
+        self.reserved_area = set()
+        for y in range(self.ry, self.ry + self.rh):
+            for x in range(self.rx, self.rx + self.rw):
+                self.reserved_area.add((x, y))
+
+    def plan(self, env) -> Tuple[Dict, Dict, Dict]:
+        N = env.grid_size
+        self._init_geometry(N)
+        return self._plan_recursive_hybrid(N, env.num_uavs)
+
+    def _plan_recursive_hybrid(self, N, num_uavs):
+        assignments = {}
+        dependencies = {}
+        entry_points = {}
+        occupied = set()
+        rx, ry, rw, rh = self.rx, self.ry, self.rw, self.rh
+        rx_end, ry_end = rx + rw, ry + rh
+        
+        # Phase 1: 骨幹
+        uav_idx = 0
+        if uav_idx < num_uavs:
+            path = [(x, 0) for x in range(N)] + [(N-1, y) for y in range(1, N)]
+            self._assign(assignments, occupied, uav_idx, path)
+            uav_idx += 1
+        if uav_idx < num_uavs:
+            path = [(0, y) for y in range(N) if (0,y) not in occupied] + \
+                   [(x, N-1) for x in range(1, N-1) if (x,N-1) not in occupied]
+            self._assign(assignments, occupied, uav_idx, path)
+            uav_idx += 1
+
+        # Phase 2: 軌道生成 (全覆蓋 Clamp 版 + virtual_occupied)
+        tracks = {'Left': [], 'Bottom': [], 'Right': [], 'Top': []}
+        virtual_occupied = occupied.copy()
+        
+        # Left
+        left_w = max(0, rx - 1)
+        for i in range(left_w):
+            tx = 1 + i
+            ty = min(ry + i, ry_end - 1)  # Clamp
+            path = [(tx, y) for y in range(N-2, ty-1, -1)]
+            if path and tx < rx:
+                path.extend([(vx, ty) for vx in range(tx+1, rx)])
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Left'].append(path)
+                for p in path: virtual_occupied.add(p)
+        
+        # Bottom
+        bottom_h = max(0, ry - 1)
+        for i in range(bottom_h):
+            ty = 1 + i
+            tx = max(rx, (rx_end - 1) - i)  # Clamp
+            path = [(x, ty) for x in range(1, tx+1)]
+            if path and ty < ry:
+                path.extend([(tx, vy) for vy in range(ty+1, ry)])
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Bottom'].append(path)
+                for p in path: virtual_occupied.add(p)
+        
+        # Right
+        right_w = max(0, (N - 1) - rx_end)
+        for i in range(right_w):
+            tx = (N - 2) - i
+            ty = max(ry, (ry_end - 1) - i)  # Clamp
+            path = [(tx, y) for y in range(1, ty+1)]
+            if path and tx >= rx_end:
+                path.extend([(vx, ty) for vx in range(tx-1, rx_end-1, -1)])
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Right'].append(path)
+                for p in path: virtual_occupied.add(p)
+        
+        # Top
+        top_h = max(0, (N - 1) - ry_end)
+        for i in range(top_h):
+            ty = (N - 2) - i
+            tx = min(rx_end - 1, rx + i)  # Clamp
+            path = [(x, ty) for x in range(N-2, tx-1, -1)]
+            if path and ty >= ry_end:
+                path.extend([(tx, vy) for vy in range(ty-1, ry_end-1, -1)])
+            path = [p for p in path if p not in self.reserved_area]
+            if path:
+                tracks['Top'].append(path)
+                for p in path: virtual_occupied.add(p)
+
+        # Phase 3: 保底分配
+        rem_uavs = list(range(uav_idx, num_uavs))
+        active = [z for z in ['Left','Bottom','Right','Top'] if tracks[z]]
+        alloc = {z: 0 for z in active}
+        
+        if active and rem_uavs:
+            k = len(rem_uavs)
+            for z in active:
+                if k > 0:
+                    alloc[z] += 1
+                    k -= 1
+            total_t = sum(len(tracks[z]) for z in active)
+            for i, z in enumerate(active):
+                if i == len(active)-1:
+                    alloc[z] += k
+                else:
+                    give = int(round(k * len(tracks[z])/total_t))
+                    if give > k:
+                        give = k
+                    alloc[z] += give
+                    k -= give
+            ptr = 0
+            for z in active:
+                us = rem_uavs[ptr : ptr+alloc[z]]
+                ptr += alloc[z]
+                self._solve(us, tracks[z], assignments, dependencies, entry_points, occupied)
+
+        self._fill_gaps(assignments, occupied, N)
+        return assignments, dependencies, entry_points
+
+    def _solve(self, uids, tracks, asses, deps, entries, occ):
+        """遞迴求解 + 序列鎖"""
+        k, h = len(uids), len(tracks)
+        if h == 0:
+            return
+        if k < h:  # Zigzag
+            if k <= 1:
+                u = uids[0] if k==1 else None
+                if u is not None:
+                    path = []
+                    for i in range(h):
+                        t = tracks[i]
+                        dist = (h-1)-i
+                        if dist % 2 == 0:
+                            path.extend(t)
+                        else:
+                            path.extend(t[::-1])
+                    self._assign(asses, occ, u, path)
+                    if path:
+                        entries[u] = path[-1]
+            else:
+                mh, mk = int(np.ceil(h/2)), int(np.ceil(k/2))
+                self._solve(uids[:mk], tracks[:mh], asses, deps, entries, occ)
+                self._solve(uids[mk:], tracks[mh:], asses, deps, entries, occ)
+        else:  # L-Split + 序列鎖
+            base, rem = k//h, k%h
+            ptr = 0
+            for i in range(h):
+                n = base + (1 if i < rem else 0)
+                curr_us = uids[ptr : ptr+n]
+                ptr += n
+                track = tracks[i]
+                track_end = track[-1] if track else None
+                # 序列鎖: 前一個 UAV 必須等待後一個完成
+                for j in range(n-1):
+                    deps[curr_us[j]] = curr_us[j+1]
+                sz = int(np.ceil(len(track)/n))
+                for j, u in enumerate(curr_us):
+                    s, e = j*sz, min((j+1)*sz, len(track))
+                    segment = track[s:e]
+                    self._assign(asses, occ, u, segment)
+                    if track_end:
+                        entries[u] = track_end
+
+    def _assign(self, asses, occ, uid, path):
+        valid = [p for p in path if p not in occ and p not in self.reserved_area]
+        if valid:
+            asses[uid] = valid
+            for p in valid:
+                occ.add(p)
+
+    def _fill_gaps(self, asses, occ, N):
+        gaps = [(x,y) for x in range(1,N-1) for y in range(1,N-1) 
+                if (x,y) not in occ and (x,y) not in self.reserved_area]
+        if gaps:
+            cands = [i for i in asses.keys() if i>=2 and asses[i]]
+            if not cands:
+                cands = [0]
+            for idx, g in enumerate(gaps):
+                uid = cands[idx % len(cands)]
+                asses[uid].append(g)
+                occ.add(g)
+
+# ============================================================================
+# 5. 模擬器 (Simulator) - 整合
+# ============================================================================
+
+class Environment:
+    def __init__(self, grid, num_uavs, seed=42):
+        self.grid_size = grid
+        self.num_uavs = num_uavs
+        self.seed = seed
+        self.gcs_pos = (0.5, 0.5)  # GCS 位置
+        self.uavs = [UAV(i) for i in range(num_uavs)]
+        self.covered = set()
+        
+        # 創建目標（隨機選擇格子，目標物放在格子中央）
+        np.random.seed(seed)
+        self.targets = []
+        available_cells = [(x, y) for x in range(grid) for y in range(grid)]
+        np.random.shuffle(available_cells)
+        
+        for i in range(num_uavs):
+            cell_x, cell_y = available_cells[i]
+            # 目標物位於格子中央 (重要：坐标必须是浮点数才能正确加0.5)
+            x = cell_x + 0.5
+            y = cell_y + 0.5
+            target = Target(
+                id=i,
+                pos=(x, y),
+                is_inner=False,  # 稍後判斷
+                quadrant=Quadrant.TOP_LEFT,  # 稍後判斷
+                discovered=False
+            )
+            self.targets.append(target)
+        
+        # 調試輸出
+        print(f"\n[目標物生成]")
+        for t in self.targets[:3]:  # 只顯示前3個
+            print(f"  T{t.id}: pos={t.pos}")
+    
+    def discover_targets(self, pos):
+        """
+        發現目標物
+        
+        規則：
+        - UAV 進入格子的任何一點，就能發現該格子內的目標物
+        - 使用格子索引判斷（而非距離），確保邏輯準確
+        
+        例如：
+        - UAV 在 (3.2, 5.7) → 格子 (3, 5)
+        - 目標在 (3.5, 5.5) → 格子 (3, 5)
+        - 格子相同 → 發現目標
+        """
+        # 計算 UAV 當前所在的格子索引
+        uav_cell_x = int(pos[0])
+        uav_cell_y = int(pos[1])
+        
+        found = False
+        for t in self.targets:
+            if not t.discovered:
+                # 計算目標所在的格子索引
+                target_cell_x = int(t.pos[0])
+                target_cell_y = int(t.pos[1])
+                
+                # 只要在同一個格子內，就能發現目標
+                if uav_cell_x == target_cell_x and uav_cell_y == target_cell_y:
+                    t.discovered = True
+                    found = True
+                    print(f"    [發現] UAV@({pos[0]}, {pos[1]}) 發現目標 T{t.id}@{t.pos}")
+        return found
+
+class Simulator:
+    def __init__(self, env, planner):
+        self.env = env
+        self.planner = planner
+        self.assignments, self.dependencies, self.entry_points = planner.plan(env)
+        self.scheduler = AdvancedInnerRingScheduler(planner.rx, planner.ry, planner.rw, planner.rh)
+        self.dispatcher = MonitoringDispatcher((0.5, 0.5), (planner.rx, planner.ry, planner.rw, planner.rh))
+        for t in env.targets:
+            self.dispatcher.add_target(t)
+        
+        # 初始化 UAV 狀態
+        for u in env.uavs:
+            if u.id in self.assignments:
+                u.path = self.assignments[u.id]
+                u.history_outer = list(u.path)
+                u.target_entry_point = self.entry_points.get(u.id)
+                if u.target_entry_point:
+                    u.entry_quadrant = self.scheduler.determine_quadrant(
+                        u.target_entry_point[0], u.target_entry_point[1])
+            u.status = UAVStatus.OUTER_SEARCHING
+        
+        # 序列鎖狀態追蹤
+        self.uav_cleared = {u.id: False for u in env.uavs}
+        
+        # 時間戳記錄
+        self.time_outer_complete = None      # 外環覆蓋完成時間
+        self.time_inner_complete = None      # 內環搶占完成時間
+        self.time_discovery_complete = None  # 所有目標發現完成時間
+        self.time_monitoring_complete = None # 所有目標監視完成時間
+        
+        print(f"\n[序列鎖] Dependencies: {self.dependencies}")
+
+    def run(self, max_time=200):
+        print(f"=== 開始模擬 ===")
+        
+        # 初始化上一個位置（用於計算距離）
+        for u in self.env.uavs:
+            u._last_position = u.position
+        
+        for t in range(max_time):
+            all_done = True
+            
+            # 檢查外環覆蓋是否完成
+            if self.time_outer_complete is None:
+                outer_done = all(u.status != UAVStatus.OUTER_SEARCHING for u in self.env.uavs)
+                if outer_done:
+                    self.time_outer_complete = t
+                    print(f"[時間戳 {t}] 外環覆蓋完成")
+            
+            # 檢查內環搶占是否完成（所有block都已被抢占，即没有White block）
+            if self.time_inner_complete is None:
+                inner_locked = self.scheduler.is_fully_locked()
+                if inner_locked and self.time_outer_complete is not None:
+                    self.time_inner_complete = t
+                    print(f"[時間戳 {t}] 內環搶占完成（所有block已被抢占）")
+            
+            # 檢查所有目標是否都被發現
+            if self.time_discovery_complete is None:
+                all_discovered = all(target.discovered for target in self.env.targets)
+                if all_discovered and len(self.env.targets) > 0:
+                    self.time_discovery_complete = t
+                    print(f"[時間戳 {t}] 所有目標發現完成 ({sum(1 for t in self.env.targets if t.discovered)}/{len(self.env.targets)})")
+            
+            # 檢查所有目標是否都被監視
+            if self.time_monitoring_complete is None:
+                all_monitored = all(target.is_monitored for target in self.env.targets)
+                if all_monitored:
+                    self.time_monitoring_complete = t
+                    print(f"[時間戳 {t}] 所有目標監視完成")
+            
+            # 批次監控調度（只有在内环完全被抢占后才开始监控任务）
+            if self.scheduler.is_fully_locked():
+                monitoring_candidates = [u for u in self.env.uavs if u.status == UAVStatus.MONITORING_QUEUE]
+                for u in monitoring_candidates:
+                    task, payload = self.dispatcher.assign_task(
+                        u.id, u.entry_quadrant or Quadrant.TOP_LEFT, self.env.uavs)
+                    if task == "TARGET":
+                        u.assigned_target = payload
+                        u.path = self._gen_path(u.position, payload.pos)
+                        u.path_index = 0
+                        u.status = UAVStatus.MONITORING
+                    elif task == "FOLLOW":
+                        u.assigned_leader_id = payload
+                        u.status = UAVStatus.FOLLOWING
+                    elif task == "DONE":
+                        u.status = UAVStatus.DONE
+
+            for u in self.env.uavs:
+                if u.status == UAVStatus.DONE:
+                    continue
+                all_done = False
+                
+                # 計算移動距離
+                if hasattr(u, '_last_position') and u.position != u._last_position:
+                    dist = np.linalg.norm(np.array(u.position) - np.array(u._last_position))
+                    u.total_distance += dist
+                u._last_position = u.position
+                
+                # A. 外環
+                if u.status == UAVStatus.OUTER_SEARCHING:
+                    if u.path_index < len(u.path):
+                        u.position = u.path[u.path_index]
+                        self.env.covered.add(u.position)
+                        u.path_index += 1
+                        if self.env.discover_targets(u.position):
+                            u.found_target_during_search = True
+                    else:
+                        u.status = UAVStatus.WAITING_FOR_UNLOCK
+                
+                # B. 等待解鎖 (序列鎖檢查)
+                # 符合投影片设计：不论是否发现目标，一律前往内环入口
+                elif u.status == UAVStatus.WAITING_FOR_UNLOCK:
+                    blocked = False
+                    if u.id in self.dependencies:
+                        blocker = self.dependencies[u.id]
+                        if not self.uav_cleared[blocker]:
+                            blocked = True
+                    
+                    if not blocked:
+                        # 解锁后，前往内环入口准备请求排程
+                        if u.target_entry_point and u.position != u.target_entry_point:
+                            u.path = self._gen_path(u.position, u.target_entry_point)
+                            u.path_index = 0
+                            u.status = UAVStatus.TRANSITING
+                        else:
+                            u.status = UAVStatus.AWAITING_ENTRY
+                        self.uav_cleared[u.id] = True
+                
+                # C. 通勤
+                elif u.status == UAVStatus.TRANSITING:
+                    if u.path_index < len(u.path):
+                        u.position = u.path[u.path_index]
+                        u.history_transit.append(u.position)
+                        u.path_index += 1
+                    else:
+                        u.status = UAVStatus.AWAITING_ENTRY
+                
+                # D. 搶占（投影片 Step 1-4 决策）
+                elif u.status == UAVStatus.AWAITING_ENTRY:
+                    success, inner_path = self.scheduler.request_access(u, float(t))
+                    if success:
+                        # 通过时间成本判断，核准进入
+                        u.path = inner_path
+                        u.path_index = 0
+                        u.status = UAVStatus.INNER_SEARCHING
+                        print(f"  [内环] UAV {u.id} 核准进入，分配路径长度 {len(inner_path)}")
+                    else:
+                        # --- 增加判斷來解除死結 ---
+                        if self.scheduler.is_fully_locked():
+                            # 內環搜尋區塊已被搶占一空，沒有搜尋任務了
+                            # 此時 UAV 應該放棄進入內環，轉向監控隊列
+                            u.status = UAVStatus.MONITORING_QUEUE
+                            print(f"  [轉向監控] 內環已滿，UAV {u.id} 轉向監控隊列")
+                        else:
+                            # 內環還有工作，只是現在不該我進去，繼續原地等待
+                            pass
+                
+                # E. 內環搜尋階段
+                elif u.status == UAVStatus.INNER_SEARCHING:
+                    if u.path_index < len(u.path):
+                        u.position = u.path[u.path_index]
+                        self.env.covered.add(u.position)
+                        u.history_inner.append(u.position)
+                        u.path_index += 1
+                        self.env.discover_targets(u.position)
+                    else:
+                        # --- 核心邏輯修改：任務連續性判斷 ---
+                        
+                        # 1. 首先將當前 Block 標記為完成 (Green)
+                        self.scheduler.mark_task_complete(u.id)
+                        print(f"  [任務完成] UAV {u.id} 已完成當前內環 Block")
+
+                        # 2. 立即請求下一個內環任務 (再次執行 Step 1-4 判斷)
+                        success, next_inner_path = self.scheduler.request_access(u, float(t))
+                        
+                        if success:
+                            # 情況 A：內環還有剩餘 Block 且通過時間成本判斷
+                            u.path = next_inner_path
+                            u.path_index = 0
+                            u.status = UAVStatus.INNER_SEARCHING  # 繼續留在內環搜尋狀態
+                            print(f"  [續接內環] UAV {u.id} 通過決策，開始下一個內環任務")
+                        else:
+                            # 情況 B：排程器拒絕給予新的內環任務
+                            if not self.scheduler.is_fully_locked():
+                                # 內環還有白色區塊，但排程器認為「等別人做」或「現在不該你做」比較划算
+                                u.status = UAVStatus.AWAITING_ENTRY  # 回到入口狀態原地等待判斷
+                                print(f"  [等待決策] UAV {u.id} 被排程器暫時拒絕，於內環原地待命")
+                            else:
+                                # 內環所有 Block 都已被搶占 (Yellow or Green)，沒有搜尋任務了
+                                u.status = UAVStatus.MONITORING_QUEUE  # 這才轉去執行監控任務
+                                print(f"  [轉向監控] 內環搜尋配額已滿，UAV {u.id} 進入監控隊列")
+                
+                # F. 跟隨
+                elif u.status == UAVStatus.FOLLOWING:
+                    if self.dispatcher.has_unmonitored_targets():
+                        u.status = UAVStatus.MONITORING_QUEUE
+                    else:
+                        leader = next((obj for obj in self.env.uavs 
+                                     if obj.id == u.assigned_leader_id), None)
+                        if leader and leader.status != UAVStatus.DONE:
+                            u.path = self._gen_path(u.position, leader.position)
+                            if u.path:
+                                u.position = u.path[0]
+                                u.history_follow.append(u.position)
+                        else:
+                            u.status = UAVStatus.MONITORING_QUEUE
+                
+                # G. 監控
+                elif u.status == UAVStatus.MONITORING:
+                    if u.path_index < len(u.path):
+                        u.position = u.path[u.path_index]
+                        u.history_monitor.append(u.position)
+                        u.path_index += 1
+                    else:
+                        u.status = UAVStatus.DONE
+            
+            if all_done:
+                break
+        
+        print(f"=== 模擬完成 (時間: {t+1}) ===")
+        
+        # 統計目標發現情況
+        discovered_count = sum(1 for target in self.env.targets if target.discovered)
+        print(f"\n【目標發現統計】總共 {len(self.env.targets)} 個目標，發現 {discovered_count} 個")
+        if discovered_count < len(self.env.targets):
+            undiscovered = [target for target in self.env.targets if not target.discovered]
+            print(f"  未發現目標:")
+            for target in undiscovered:
+                print(f"    T{target.id} @ {target.pos}")
+        
+        print(f"\n【階段完成時間統計】")
+        print(f"  外環覆蓋完成: {self.time_outer_complete if self.time_outer_complete else 'N/A'}")
+        print(f"  內環搶占完成: {self.time_inner_complete if self.time_inner_complete else 'N/A'}")
+        print(f"  目標發現完成: {self.time_discovery_complete if self.time_discovery_complete else 'N/A'}")
+        print(f"  目標監視完成: {self.time_monitoring_complete if self.time_monitoring_complete else 'N/A'}")
+        print(f"  總執行時間: {t+1}")
+        
+        # 保存完成時間供外部訪問
+        self.current_time = t + 1
+        
+        self.visualize()
+
+    def _gen_path(self, start, end):
+        p1 = np.array(start)
+        p2 = np.array(end)
+        dist = np.linalg.norm(p2-p1)  # 保留浮點數距離
+        if dist < 0.1:  # 距離極小時視為到達
+            return [end]
+        
+        steps = int(dist)  # 移動步數
+        if steps == 0:
+            return [end]
+        
+        # 移除 int(...)，保留原始的小數坐標
+        return [(p1[0]+(p2[0]-p1[0])*i/steps, p1[1]+(p2[1]-p1[1])*i/steps) 
+                for i in range(1, steps+1)]
+
+    def visualize(self):
+        fig, ax = plt.subplots(figsize=(12, 12))
+        N = self.env.grid_size
+        
+        # 網格
+        for i in range(N+1):
+            ax.plot([i, i], [0, N], 'k-', alpha=0.1, linewidth=0.5)
+            ax.plot([0, N], [i, i], 'k-', alpha=0.1, linewidth=0.5)
+        
+        # 內環區
+        rect = plt.Rectangle((self.planner.rx, self.planner.ry), 
+                             self.planner.rw, self.planner.rh, 
+                             color='lightcoral', alpha=0.15, linewidth=2,
+                             edgecolor='red', linestyle='--',
+                             label='內環保留區')
+        ax.add_patch(rect)
+        
+        # 目標點
+        print(f"\n[可視化] 繪製目標物:")
+        for t in self.env.targets:
+            print(f"  T{t.id}: 繪製在 ({t.pos[0]}, {t.pos[1]})")
+            if t.discovered:
+                if t.is_monitored:
+                    # 已訪問目標：實心圓
+                    ax.plot(t.pos[0], t.pos[1], 'o', color='red', markersize=14, 
+                           markeredgewidth=3, markeredgecolor='darkred', alpha=0.8, zorder=10)
+                else:
+                    # 已發現未訪問：空心圓
+                    ax.plot(t.pos[0], t.pos[1], 'o', color='white', markersize=14, 
+                           markeredgewidth=2.5, markeredgecolor='orange', alpha=0.8, zorder=10)
+            else:
+                # 未發現目標：灰色叉
+                ax.plot(t.pos[0], t.pos[1], 'x', color='gray', markersize=12, 
+                       markeredgewidth=2, alpha=0.6, zorder=10)
+            
+            # 目標標籤
+            label_color = 'black' if t.discovered else 'gray'
+            ax.text(t.pos[0]+0.3, t.pos[1]+0.3, f"T{t.id}", 
+                   fontsize=9, color=label_color, fontweight='bold',
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7))
+        
+        # UAV 路徑
+        colors = ['blue', 'green', 'orange', 'purple', 'brown', 'pink', 
+                 'cyan', 'magenta', 'navy', 'lime']
+        
+        for u in self.env.uavs:
+            color = colors[u.id % len(colors)]
+            
+            # 1. 外環搜尋路徑（實線）
+            if u.history_outer:
+                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_outer]
+                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                ax.plot(xs, ys, '-', color=color, linewidth=2.5, alpha=0.8, 
+                       label=f'UAV {u.id}', zorder=5)
+                # 起點
+                ax.plot(xs[0], ys[0], 'o', color=color, markersize=10, 
+                       markeredgewidth=2, markeredgecolor='black', zorder=15)
+                # 終點
+                ax.plot(xs[-1], ys[-1], 's', color=color, markersize=10, 
+                       markeredgewidth=2, markeredgecolor='black', zorder=15)
+            
+            # 2. 通勤路徑（虛線）
+            if u.history_transit:
+                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_transit]
+                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                ax.plot(xs, ys, '--', color=color, linewidth=1.5, alpha=0.5, zorder=4)
+            
+            # 3. 內環搜尋路徑（點線）
+            if u.history_inner:
+                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_inner]
+                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                ax.plot(xs, ys, ':', color=color, linewidth=2.0, alpha=0.7, zorder=6)
+                # 內環終點
+                ax.plot(xs[-1], ys[-1], 's', color=color, markersize=10, 
+                       markeredgewidth=2, markeredgecolor='black', zorder=15)
+            
+            # 4. 監控路徑（細實線）
+            if u.history_monitor:
+                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_monitor]
+                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                ax.plot(xs, ys, '-', color=color, linewidth=1.5, alpha=0.6, zorder=5)
+            
+            # 5. 跟隨路徑（點劃線）
+            if u.history_follow:
+                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_follow]
+                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                ax.plot(xs, ys, '-.', color=color, linewidth=1.0, alpha=0.4, zorder=3)
+            
+            # UAV 當前位置標記
+            if u.status == UAVStatus.DONE:
+                # 已完成：星形
+                ax.plot(u.position[0], u.position[1], '*', color=color, 
+                       markersize=18, markeredgewidth=2.5, markeredgecolor='black', zorder=20)
+            else:
+                # 執行中：三角形
+                ax.plot(u.position[0], u.position[1], '^', color=color, 
+                       markersize=14, markeredgewidth=2, markeredgecolor='black', zorder=20)
+            
+            # UAV 標籤
+            bg_color = 'white' if u.status == UAVStatus.DONE else 'yellow'
+            ax.text(u.position[0]+0.3, u.position[1]+0.4, f'U{u.id}',
+                   fontsize=9, color=color, fontweight='bold',
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor=bg_color, alpha=0.8))
+        
+        # GCS
+        ax.plot(0.5, 0.5, '*', color='gold', markersize=25, 
+               markeredgewidth=2, markeredgecolor='black', label='GCS', zorder=15)
+        
+        # 設置
+        ax.set_xlim(-0.5, N + 0.5)
+        ax.set_ylim(-0.5, N + 0.5)
+        ax.set_aspect('equal')
+        ax.set_xlabel('X', fontsize=11)
+        ax.set_ylabel('Y', fontsize=11)
+        ax.grid(False)
+        
+        # 統計信息
+        discovered = sum(1 for t in self.env.targets if t.discovered)
+        monitored = sum(1 for t in self.env.targets if t.is_monitored)
+        coverage = len(self.env.covered) / (N * N) * 100
+        
+        title = f"進階風車式演算法 (內環覆蓋+監視邏輯+序列鎖)\n"
+        title += f"網格: {N}×{N} | UAVs: {self.env.num_uavs} | 內環: {self.planner.rw}×{self.planner.rh}"
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        
+        info_text = (
+            f"覆蓋率: {coverage:.1f}%\n"
+            f"目標發現: {discovered}/{len(self.env.targets)}\n"
+            f"目標監控: {monitored}/{len(self.env.targets)}\n"
+            f"\n【階段完成時間】\n"
+            f"外環覆蓋: {self.time_outer_complete if self.time_outer_complete else 'N/A'}\n"
+            f"內環搶占: {self.time_inner_complete if self.time_inner_complete else 'N/A'}\n"
+            f"目標發現: {self.time_discovery_complete if self.time_discovery_complete else 'N/A'}\n"
+            f"目標監視: {self.time_monitoring_complete if self.time_monitoring_complete else 'N/A'}\n"
+            f"總執行時間: {self.current_time}\n"
+            f"\n序列鎖: {len(self.dependencies)} 個\n"
+            f"\n【圖例說明】\n"
+            f"● 紅色實心: 已訪問目標\n"
+            f"○ 橙色空心: 已發現未訪問\n"
+            f"✕ 灰色叉: 未發現目標\n"
+            f"━━ 實線: 外環搜尋\n"
+            f"╌╌ 虛線: 通勤路徑\n"
+            f"⋯⋯ 點線: 內環搜尋\n"
+            f"─ 細線: 監控路徑\n"
+            f"-·- 點劃: 跟隨路徑\n"
+            f"★ 星形: UAV已完成\n"
+            f"▲ 三角: UAV執行中\n"
+        )
+        
+        ax.text(0.02, 0.98, info_text, transform=ax.transAxes, 
+               fontsize=9, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+        
+        ax.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=2)
+        
+        plt.tight_layout()
+        plt.savefig('windmill_advanced_result.png', dpi=150, bbox_inches='tight')
+        print(f"✓ 可視化圖已保存: windmill_advanced_result.png")
+        plt.show()
+
+# ============================================================================
+# 6. 執行入口
+# ============================================================================
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='進階風車式演算法 - 內環覆蓋+監視邏輯')
+    parser.add_argument('--grid', type=int, default=12, help='網格大小')
+    parser.add_argument('--uavs', type=int, default=8, help='UAV 數量')
+    parser.add_argument('--reserved-width', type=int, default=6, help='內環區寬度')
+    parser.add_argument('--reserved-height', type=int, default=6, help='內環區高度')
+    parser.add_argument('--reserved-x', type=int, default=None, help='內環區 X 座標 (None=置中)')
+    parser.add_argument('--reserved-y', type=int, default=None, help='內環區 Y 座標 (None=置中)')
+    parser.add_argument('--max-time', type=int, default=200, help='最大模擬時間')
+    parser.add_argument('--seed', type=int, default=42, help='隨機種子')
+    parser.add_argument('--compare-tsp', action='store_true', help='啟用 TSP 對比測試')
+    
+    args = parser.parse_args()
+    
+    # 建立環境（目標物隨機生成，數量等於 UAV 數量）
+    env = Environment(args.grid, args.uavs, seed=args.seed)
+    
+    # 建立規劃器和模擬器
+    planner = BoustrophedonPlanner(reserved_w=args.reserved_width, 
+                                   reserved_h=args.reserved_height,
+                                   reserved_x=args.reserved_x,
+                                   reserved_y=args.reserved_y)
+    
+    # 初始化內環幾何位置
+    planner._init_geometry(args.grid)
+    
+    # 判斷目標物是否在內環區
+    for t in env.targets:
+        x, y = int(t.pos[0]), int(t.pos[1])
+        if (planner.rx <= x < planner.rx + planner.rw and 
+            planner.ry <= y < planner.ry + planner.rh):
+            t.is_inner = True
+        else:
+            t.is_inner = False
+        
+        # 確定目標象限
+        cx, cy = args.grid / 2, args.grid / 2
+        if t.pos[0] < cx:
+            t.quadrant = Quadrant.BOTTOM_LEFT if t.pos[1] < cy else Quadrant.TOP_LEFT
+        else:
+            t.quadrant = Quadrant.BOTTOM_RIGHT if t.pos[1] < cy else Quadrant.TOP_RIGHT
+    
+    # 執行風車式演算法
+    print("\n" + "="*60)
+    print("方法 1: 風車式混合演算法 (Windmill Hybrid)")
+    print("="*60)
+    sim = Simulator(env, planner)
+    sim.run(max_time=args.max_time)
+    
+    # 記錄風車式結果
+    windmill_makespan = sim.current_time
+    windmill_total_dist = sum(u.total_distance for u in env.uavs)
+    
