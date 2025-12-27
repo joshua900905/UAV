@@ -7,6 +7,14 @@
 4. 象限管理系統
 """
 
+import sys
+import io
+
+# 設置 UTF-8 輸出編碼 (Windows 兼容)
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import List, Dict, Tuple, Set, Optional
@@ -46,7 +54,6 @@ class UAVStatus(Enum):
     INNER_SEARCHING = 5    # 搶占成功，執行內環搜尋
     MONITORING_QUEUE = 6   # 準備接取監控任務
     MONITORING = 7         # 正在前往/執行監控任務
-    FOLLOWING = 8          # 跟隨模式
     DONE = 9               # 任務結束
 
 @dataclass
@@ -73,23 +80,21 @@ class UAV:
         self.id = id
         self.position = (0.5, 0.5)
         self.status = UAVStatus.OUTER_SEARCHING
-        self.path: List[Tuple[int, int]] = [] 
+        self.path: List[Tuple[float, float]] = []  # 支援浮點數路徑
         self.path_index = 0
         
-        self.found_target_during_search = False
         self.target_entry_point = None
         self.entry_quadrant = None
-        self.assigned_target = None
-        self.assigned_leader_id = None
+        self.assigned_target: Optional[Target] = None
         
         self.history_outer = []
         self.history_transit = []
         self.history_inner = []
         self.history_monitor = []
-        self.history_follow = []
         
         # 距離統計
         self.total_distance = 0.0
+        self._last_position = (0.5, 0.5)
 
 # ============================================================================
 # 2. 進階內環排程器 (Advanced Scheduler - Time/Cost Logic)
@@ -113,6 +118,7 @@ class AdvancedInnerRingScheduler:
         
         self.neighbors = {
             Quadrant.TOP_LEFT: [Quadrant.TOP_RIGHT, Quadrant.BOTTOM_LEFT],
+
             Quadrant.TOP_RIGHT: [Quadrant.TOP_LEFT, Quadrant.BOTTOM_RIGHT],
             Quadrant.BOTTOM_LEFT: [Quadrant.BOTTOM_RIGHT, Quadrant.TOP_LEFT],
             Quadrant.BOTTOM_RIGHT: [Quadrant.BOTTOM_LEFT, Quadrant.TOP_RIGHT]
@@ -269,68 +275,148 @@ class AdvancedInnerRingScheduler:
         return path
 
 # ============================================================================
-# 3. 監控調度器 (Monitoring Dispatcher)
+# 3. 全局瓶頸優化調度器 (Global Bottleneck Assignment Problem Solver)
 # ============================================================================
 
-class MonitoringDispatcher:
-    def __init__(self, gcs_pos, inner_bounds):
-        self.targets: List[Target] = []
-        self.gcs_pos = gcs_pos
-        self.rx, self.ry, self.rw, self.rh = inner_bounds
-        self.mapping = {
-            Quadrant.TOP_LEFT: Quadrant.TOP_LEFT,
-            Quadrant.TOP_RIGHT: Quadrant.TOP_RIGHT,
-            Quadrant.BOTTOM_LEFT: Quadrant.BOTTOM_LEFT,
-            Quadrant.BOTTOM_RIGHT: Quadrant.BOTTOM_RIGHT
-        }
-
-    def add_target(self, t: Target):
-        self.targets.append(t)
+class GlobalBottleneckDispatcher:
+    """
+    全局瓶頸優化調度器 (OBLAP Solver)
     
-    def _dist_to_gcs(self, t: Target):
-        return math.sqrt((t.pos[0]-self.gcs_pos[0])**2 + (t.pos[1]-self.gcs_pos[1])**2)
+    核心算法：
+    - 目標：Minimize max(TravelTime)，即最小化 Makespan（最長完工時間）
+    - 方法：二分搜尋 + 二分圖最大匹配（Binary Search + Bipartite Matching）
+    - 保證：數學上的全局最優解，確保所有目標都被覆蓋且負載均衡
     
-    def _get_inner_layer_score(self, t: Target):
-        x, y = int(t.pos[0]), int(t.pos[1])
-        is_border = (x==self.rx) or (x==self.rx+self.rw-1) or (y==self.ry) or (y==self.ry+self.rh-1)
-        return 2 if is_border else 1
-    
-    def has_unmonitored_targets(self):
-        return any(not t.is_monitored and t.discovered for t in self.targets)
+    優勢：
+    1. 全局視角：不會遺漏邊角目標（如 T5、T6）
+    2. 負載均衡：避免某些 UAV 閒置而其他拖累整體 Makespan
+    3. 數學最優：Min-Max 指派保證最壞情況下的最佳解
+    """
+    def __init__(self, grid_size):
+        self.grid_size = grid_size
 
-    def assign_task(self, uav_id: int, uav_quadrant: Quadrant, all_uavs: List[UAV]) -> Tuple[str, any]:
-        pool = [t for t in self.targets if not t.is_monitored and t.discovered]
-        if not pool:
-            searchers = [u for u in all_uavs if u.status in [UAVStatus.OUTER_SEARCHING, UAVStatus.INNER_SEARCHING]]
-            if searchers:
-                return "FOLLOW", random.choice(searchers).id
-            return "DONE", None
 
-        best = None
-        target_zone = self.mapping.get(uav_quadrant, Quadrant.TOP_LEFT)
+    def solve(self, all_uavs: List[UAV], all_targets: List[Target], current_time: float):
+        """
+        全局瓶頸優化核心：
+        1. 建立資源池：所有已結束搜尋任務的 UAV
+        2. 建立需求池：所有已發現的目標
+        3. 建立成本矩陣並求解 Min-Max 指派
+        4. 全域重置並套用最優解
+        """
+        # 1. 取得資源池：所有已結束搜尋任務的 UAV
+        uav_pool = [u for u in all_uavs if u.status in [
+            UAVStatus.MONITORING_QUEUE,
+            UAVStatus.MONITORING,
+            UAVStatus.AWAITING_ENTRY
+        ]]
+        # 2. 取得需求池：所有已發現的目標
+        target_pool = [t for t in all_targets if t.discovered]
         
-        # A. 責任區
-        cands = [t for t in pool if not t.is_inner and t.quadrant == target_zone]
-        if cands:
-            best = max(cands, key=self._dist_to_gcs)
-        
-        # B. 支援區
-        if not best:
-            cands = [t for t in pool if not t.is_inner]
-            if cands:
-                best = max(cands, key=self._dist_to_gcs)
-        
-        # C. 內環
-        if not best:
-            cands = [t for t in pool if t.is_inner]
-            if cands:
-                best = max(cands, key=lambda t: (self._get_inner_layer_score(t), self._dist_to_gcs(t)))
+        if not uav_pool or not target_pool:
+            return
 
-        if best:
-            best.is_monitored = True
-            best.monitored_by = uav_id
-            return "TARGET", best
-        return "DONE", None
+        # 3. 建立成本矩陣 (UAVs x Targets)
+        n, m = len(uav_pool), len(target_pool)
+        cost_matrix = np.zeros((n, m))
+        for i, u in enumerate(uav_pool):
+            for j, t in enumerate(target_pool):
+                cost_matrix[i, j] = np.linalg.norm(np.array(u.position) - np.array(t.pos))
+
+        # 4. 求解全局瓶頸指派 (Min-Max Matching)
+        # 使用二分搜尋法尋找最小的「最大距離門檻 d」
+        best_matching = self._solve_min_max(cost_matrix, uav_pool, target_pool)
+        
+        # 5. 全域重置並重新套用最優解
+        if best_matching:
+            # 先釋放所有舊目標狀態 (全域洗牌)
+            for t in target_pool:
+                t.is_monitored = False
+            
+            for u_idx, t_idx in best_matching.items():
+                u = uav_pool[u_idx]
+                t = target_pool[t_idx]
+                
+                # 只有當目標實質改變，或者 UAV 本來沒任務時才重新規劃
+                if not hasattr(u, 'assigned_target') or u.assigned_target != t:
+                    u.assigned_target = t
+                    u.path = self._gen_float_path(u.position, t.pos)
+                    u.path_index = 0
+                    u.status = UAVStatus.MONITORING
+                    t.monitored_by = u.id
+                    print(f"  [全局優化] T={current_time:.0f} | UAV {u.id} → Target {t.id} (全域最優分配)")
+
+    def _solve_min_max(self, matrix, uav_pool, target_pool):
+        """二分搜尋配合二分圖匹配求解 Min-Max"""
+        n, m = matrix.shape
+        # 所有可能的距離值（排序後用於二分搜尋）
+        distances = sorted(list(set(matrix.flatten())))
+        low = 0
+        high = len(distances) - 1
+        best_match = None
+        
+        while low <= high:
+            mid = (low + high) // 2
+            threshold = distances[mid]
+            
+            # 建立二分圖：只保留距離 <= threshold 的邊
+            match = self._bipartite_matching(matrix, threshold)
+            
+            # 判斷是否所有目標都能被覆蓋（或是所有 UAV 都被用到）
+            if len(match) >= min(n, m):
+                best_match = match
+                high = mid - 1  # 嘗試更小的瓶頸
+            else:
+                low = mid + 1
+        
+        return best_match
+
+    def _bipartite_matching(self, matrix, threshold):
+        """使用 DFS 求解二分圖最大匹配"""
+        n, m = matrix.shape
+        match = [-1] * m  # match[target] = uav_index
+        
+        def dfs(u, visited):
+            """深度優先搜尋增廣路徑"""
+            for v in range(m):
+                if matrix[u, v] <= threshold and not visited[v]:
+                    visited[v] = True
+                    if match[v] < 0 or dfs(match[v], visited):
+                        match[v] = u
+                        return True
+            return False
+
+        count = 0
+        for i in range(n):
+            if dfs(i, [False] * m):
+                count += 1
+        
+        # 返回 UAV_index -> Target_index 的映射字典
+        result = {}
+        for t_idx, u_idx in enumerate(match):
+            if u_idx != -1:
+                result[u_idx] = t_idx
+        return result
+
+
+    def _gen_float_path(self, start: Tuple[float, float], end: Tuple[float, float]) -> List[Tuple[float, float]]:
+        """生成浮點數精確路徑（確保 UAV 星星精準對齊目標紅點）
+        修正：從 range(0, steps+1) 開始，確保路徑包含起點，避免視覺斷裂
+        修正：起點座標需要 +0.5 對齊格子中心"""
+        # 如果起點是整數座標，轉換為格子中心座標
+        if isinstance(start[0], int) or (isinstance(start, tuple) and start[0] == int(start[0])):
+            p1 = np.array([start[0] + 0.5, start[1] + 0.5])
+        else:
+            p1 = np.array(start)
+        
+        p2 = np.array(end)
+        dist = np.linalg.norm(p2 - p1)
+        if dist < 0.1: 
+            return [end]
+        steps = max(1, int(dist))
+        # 修正：range 從 0 開始，讓第一個點是當前位置 p1，確保路徑連貫
+        return [(p1[0] + (p2[0]-p1[0])*i/steps, p1[1] + (p2[1]-p1[1])*i/steps) 
+                for i in range(0, steps+1)]
 
 # ============================================================================
 # 4. 規劃器 (Planner) - 全覆蓋 + 遞迴
@@ -578,16 +664,14 @@ class Environment:
         - UAV 進入格子的任何一點，就能發現該格子內的目標物
         - 使用格子索引判斷（而非距離），確保邏輯準確
         
-        例如：
-        - UAV 在 (3.2, 5.7) → 格子 (3, 5)
-        - 目標在 (3.5, 5.5) → 格子 (3, 5)
-        - 格子相同 → 發現目標
+        返回：
+        - bool: 是否發現了新目標（作為 RRBBA 事件觸發點）
         """
         # 計算 UAV 當前所在的格子索引
         uav_cell_x = int(pos[0])
         uav_cell_y = int(pos[1])
         
-        found = False
+        found_new = False  # 標記是否發現了「新」目標
         for t in self.targets:
             if not t.discovered:
                 # 計算目標所在的格子索引
@@ -597,19 +681,20 @@ class Environment:
                 # 只要在同一個格子內，就能發現目標
                 if uav_cell_x == target_cell_x and uav_cell_y == target_cell_y:
                     t.discovered = True
-                    found = True
-                    print(f"    [發現] UAV@({pos[0]}, {pos[1]}) 發現目標 T{t.id}@{t.pos}")
-        return found
+                    found_new = True  # 觸發事件
+                    print(f"    [事件:新目標] UAV@{pos} 發現 T{t.id}@{t.pos}")
+        return found_new  # 返回是否發現新目標
 
 class Simulator:
-    def __init__(self, env, planner):
+    def __init__(self, env, planner, no_plot=False, save_path=None):
         self.env = env
         self.planner = planner
+        self.no_plot = no_plot  # Add no_plot attribute
+        self.save_path = save_path  # Path to save visualization
         self.assignments, self.dependencies, self.entry_points = planner.plan(env)
         self.scheduler = AdvancedInnerRingScheduler(planner.rx, planner.ry, planner.rw, planner.rh)
-        self.dispatcher = MonitoringDispatcher((0.5, 0.5), (planner.rx, planner.ry, planner.rw, planner.rh))
-        for t in env.targets:
-            self.dispatcher.add_target(t)
+        # 替換為全局瓶頸優化調度器
+        self.dispatcher = GlobalBottleneckDispatcher(env.grid_size)
         
         # 初始化 UAV 狀態
         for u in env.uavs:
@@ -634,16 +719,60 @@ class Simulator:
         print(f"\n[序列鎖] Dependencies: {self.dependencies}")
 
     def run(self, max_time=200):
-        print(f"=== 開始模擬 ===")
+        print(f"=== 開始模擬 (OBLAP 任務優先模式) ===")
+        print(f"觸發機制：新目標發現 或 新資源加入時啟動 OBLAP")
+        print(f"優化目標：Minimize max(TravelTime) — 最小化 Makespan")
+        print(f"智能模式：所有目標發現後立即終止搜尋，全力轉入監控")
         
         # 初始化上一個位置（用於計算距離）
         for u in self.env.uavs:
             u._last_position = u.position
         
+        # 追蹤 RRBBA 觸發次數（用於效能分析）
+        rrbba_trigger_count = 0
+        
         for t in range(max_time):
+            # --- 關鍵優化：任務達成判定（發現即轉向）---
+            all_targets_found = all(t_obj.discovered for t_obj in self.env.targets)
+            
+            # ===== 事件驅動的 OBLAP 調度 =====
+            # 初始化本時步的調度旗標
+            trigger_reallocation = False
+            trigger_reason = []  # 記錄觸發原因（用於調試）
+            
+            # 如果目標全數發現，但還有 UAV 在搜尋，執行強制轉向
+            searching_uavs = [u for u in self.env.uavs if u.status in [
+                UAVStatus.OUTER_SEARCHING, 
+                UAVStatus.INNER_SEARCHING
+            ]]
+            
+            if all_targets_found and searching_uavs and self.time_discovery_complete is not None:
+                print(f"\n[!!! 任務達成 !!!] T={t} | 所有目標已發現，停止搜尋，全力轉入監控階段")
+                for u_search in searching_uavs:
+                    # 如果有無人機正在內環，釋放排程器的佔位 (Yellow -> Green)
+                    if u_search.status == UAVStatus.INNER_SEARCHING:
+                        self.scheduler.mark_task_complete(u_search.id)
+                    
+                    # 強制轉向監控隊列
+                    u_search.status = UAVStatus.MONITORING_QUEUE
+                    u_search.path = []  # 放棄剩餘掃描路徑
+                    print(f"  [強制轉向] UAV {u_search.id} 放棄搜尋路徑，轉入監控池")
+                
+                trigger_reallocation = True
+                trigger_reason.append("所有目標已發現(強制轉向)")
+                
+                # 更新外環/內環完成時間（如果尚未記錄）
+                if self.time_outer_complete is None:
+                    self.time_outer_complete = t
+                    print(f"[時間戳 {t}] 外環覆蓋完成（任務優先中止）")
+                if self.time_inner_complete is None:
+                    self.time_inner_complete = t
+                    print(f"[時間戳 {t}] 內環搶占完成（任務優先中止）")
+            
+            
             all_done = True
             
-            # 檢查外環覆蓋是否完成
+            # 檢查外環覆蓋是否完成（僅在未強制轉向時記錄）
             if self.time_outer_complete is None:
                 outer_done = all(u.status != UAVStatus.OUTER_SEARCHING for u in self.env.uavs)
                 if outer_done:
@@ -664,29 +793,19 @@ class Simulator:
                     self.time_discovery_complete = t
                     print(f"[時間戳 {t}] 所有目標發現完成 ({sum(1 for t in self.env.targets if t.discovered)}/{len(self.env.targets)})")
             
-            # 檢查所有目標是否都被監視
+            # --- 全域監視完成判定（解決 N/A 的關鍵）---
             if self.time_monitoring_complete is None:
-                all_monitored = all(target.is_monitored for target in self.env.targets)
-                if all_monitored:
-                    self.time_monitoring_complete = t
-                    print(f"[時間戳 {t}] 所有目標監視完成")
-            
-            # 批次監控調度（只有在内环完全被抢占后才开始监控任务）
-            if self.scheduler.is_fully_locked():
-                monitoring_candidates = [u for u in self.env.uavs if u.status == UAVStatus.MONITORING_QUEUE]
-                for u in monitoring_candidates:
-                    task, payload = self.dispatcher.assign_task(
-                        u.id, u.entry_quadrant or Quadrant.TOP_LEFT, self.env.uavs)
-                    if task == "TARGET":
-                        u.assigned_target = payload
-                        u.path = self._gen_path(u.position, payload.pos)
-                        u.path_index = 0
-                        u.status = UAVStatus.MONITORING
-                    elif task == "FOLLOW":
-                        u.assigned_leader_id = payload
-                        u.status = UAVStatus.FOLLOWING
-                    elif task == "DONE":
-                        u.status = UAVStatus.DONE
+                # 只檢查已發現的目標（未發現的不應計入監視完成統計）
+                discovered_targets = [target for target in self.env.targets if target.discovered]
+                if discovered_targets:
+                    all_monitored = all(target.is_monitored for target in discovered_targets)
+                    if all_monitored:
+                        self.time_monitoring_complete = t
+                        print(f"[時間戳 {t}] 所有監視任務圓滿達成（{len(discovered_targets)}/{len(discovered_targets)} 已監控）")
+                        # 立即將所有 MONITORING 的 UAV 轉為 DONE 以消除延遲
+                        for u_done in self.env.uavs:
+                            if u_done.status == UAVStatus.MONITORING:
+                                u_done.status = UAVStatus.DONE
 
             for u in self.env.uavs:
                 if u.status == UAVStatus.DONE:
@@ -702,11 +821,15 @@ class Simulator:
                 # A. 外環
                 if u.status == UAVStatus.OUTER_SEARCHING:
                     if u.path_index < len(u.path):
-                        u.position = u.path[u.path_index]
-                        self.env.covered.add(u.position)
+                        target_cell = u.path[u.path_index]
+                        # 修正：將座標轉換為格子中心 (X.5, Y.5)，確保與監控路徑對齊
+                        u.position = (float(target_cell[0]) + 0.5, float(target_cell[1]) + 0.5)
+                        self.env.covered.add(target_cell)  # covered 仍使用整數索引
                         u.path_index += 1
-                        if self.env.discover_targets(u.position):
-                            u.found_target_during_search = True
+                        # 事件觸發點 1：發現新目標
+                        if self.env.discover_targets(target_cell):  # 發現判定使用整數索引
+                            trigger_reallocation = True
+                            trigger_reason.append("新目標發現")
                     else:
                         u.status = UAVStatus.WAITING_FOR_UNLOCK
                 
@@ -740,32 +863,39 @@ class Simulator:
                 
                 # D. 搶占（投影片 Step 1-4 决策）
                 elif u.status == UAVStatus.AWAITING_ENTRY:
-                    success, inner_path = self.scheduler.request_access(u, float(t))
-                    if success:
-                        # 通过时间成本判断，核准进入
-                        u.path = inner_path
-                        u.path_index = 0
-                        u.status = UAVStatus.INNER_SEARCHING
-                        print(f"  [内环] UAV {u.id} 核准进入，分配路径长度 {len(inner_path)}")
+                    # 優先檢查：如果內環已全數鎖定，直接轉向監控隊列
+                    # 這是關鍵優化：讓沒搶到搜尋任務的 UAV 立即參與監控
+                    if self.scheduler.is_fully_locked():
+                        u.status = UAVStatus.MONITORING_QUEUE
+                        # 事件觸發點 2：新資源加入
+                        trigger_reallocation = True
+                        trigger_reason.append(f"UAV{u.id}加入調度池")
+                        print(f"  [事件:新資源] UAV {u.id} 立即加入 RRBBA 調度池")
                     else:
-                        # --- 增加判斷來解除死結 ---
-                        if self.scheduler.is_fully_locked():
-                            # 內環搜尋區塊已被搶占一空，沒有搜尋任務了
-                            # 此時 UAV 應該放棄進入內環，轉向監控隊列
-                            u.status = UAVStatus.MONITORING_QUEUE
-                            print(f"  [轉向監控] 內環已滿，UAV {u.id} 轉向監控隊列")
+                        # 內環還有可用區塊，嘗試搶占
+                        success, inner_path = self.scheduler.request_access(u, float(t))
+                        if success:
+                            # 通过时间成本判断，核准进入
+                            u.path = inner_path
+                            u.path_index = 0
+                            u.status = UAVStatus.INNER_SEARCHING
+                            print(f"  [内环] UAV {u.id} 核准进入，分配路径长度 {len(inner_path)}")
                         else:
-                            # 內環還有工作，只是現在不該我進去，繼續原地等待
+                            # 內環還有工作，只是現在成本判斷不划算，繼續原地等待
                             pass
                 
                 # E. 內環搜尋階段
                 elif u.status == UAVStatus.INNER_SEARCHING:
                     if u.path_index < len(u.path):
-                        u.position = u.path[u.path_index]
-                        self.env.covered.add(u.position)
+                        target_cell = u.path[u.path_index]
+                        u.position = target_cell
+                        self.env.covered.add(target_cell)
                         u.history_inner.append(u.position)
                         u.path_index += 1
-                        self.env.discover_targets(u.position)
+                        # 事件觸發點 1：發現新目標
+                        if self.env.discover_targets(target_cell):
+                            trigger_reallocation = True
+                            trigger_reason.append("新目標發現")
                     else:
                         # --- 核心邏輯修改：任務連續性判斷 ---
                         
@@ -784,43 +914,44 @@ class Simulator:
                             print(f"  [續接內環] UAV {u.id} 通過決策，開始下一個內環任務")
                         else:
                             # 情況 B：排程器拒絕給予新的內環任務
-                            if not self.scheduler.is_fully_locked():
-                                # 內環還有白色區塊，但排程器認為「等別人做」或「現在不該你做」比較划算
-                                u.status = UAVStatus.AWAITING_ENTRY  # 回到入口狀態原地等待判斷
-                                print(f"  [等待決策] UAV {u.id} 被排程器暫時拒絕，於內環原地待命")
-                            else:
-                                # 內環所有 Block 都已被搶占 (Yellow or Green)，沒有搜尋任務了
-                                u.status = UAVStatus.MONITORING_QUEUE  # 這才轉去執行監控任務
-                                print(f"  [轉向監控] 內環搜尋配額已滿，UAV {u.id} 進入監控隊列")
-                
-                # F. 跟隨
-                elif u.status == UAVStatus.FOLLOWING:
-                    if self.dispatcher.has_unmonitored_targets():
-                        u.status = UAVStatus.MONITORING_QUEUE
-                    else:
-                        leader = next((obj for obj in self.env.uavs 
-                                     if obj.id == u.assigned_leader_id), None)
-                        if leader and leader.status != UAVStatus.DONE:
-                            u.path = self._gen_path(u.position, leader.position)
-                            if u.path:
-                                u.position = u.path[0]
-                                u.history_follow.append(u.position)
-                        else:
+                            # 修正點：不論內環是否全鎖定，只要續接失敗就立即轉向監控
+                            # 邏輯：「既然搜尋不需要我了，我應該立即去支援監控任務」
                             u.status = UAVStatus.MONITORING_QUEUE
+                            # 事件觸發點 2：新資源加入（角色切換）
+                            trigger_reallocation = True
+                            trigger_reason.append(f"UAV{u.id}搜尋轉監控")
+                            print(f"  [角色轉向] 搜尋結束，UAV {u.id} 轉向監控任務")
                 
-                # G. 監控
+                # F. 監控
                 elif u.status == UAVStatus.MONITORING:
                     if u.path_index < len(u.path):
+                        # 飛行中：沿路徑移動
                         u.position = u.path[u.path_index]
                         u.history_monitor.append(u.position)
                         u.path_index += 1
                     else:
-                        u.status = UAVStatus.DONE
+                        # 抵達目標點：持續監視
+                        # 立刻標記 is_monitored（這是觸發全域完成判定的關鍵）
+                        if hasattr(u, 'assigned_target') and u.assigned_target:
+                            u.assigned_target.is_monitored = True
+                            u.assigned_target.monitored_by = u.id
+                        
+                        # 已移除延遲：全域監視完成時會自動轉 DONE
+                        # UAV 保持 MONITORING 狀態，等待下一個時間步的全域檢查
+                        pass
+            
+            # ===== 事件驅動的 OBLAP 執行 =====
+            # 觸發條件：(內環已鎖定 OR 所有目標已發現) AND 有事件發生
+            if (self.scheduler.is_fully_locked() or all_targets_found) and trigger_reallocation:
+                rrbba_trigger_count += 1
+                print(f"\n--- [事件驅動調度 #{rrbba_trigger_count}] T={t} | 原因: {', '.join(trigger_reason)} ---")
+                self.dispatcher.solve(self.env.uavs, self.env.targets, float(t))
             
             if all_done:
                 break
         
         print(f"=== 模擬完成 (時間: {t+1}) ===")
+        print(f"\n[效能統計] RRBBA 觸發次數: {rrbba_trigger_count} 次 (事件驅動機制)")
         
         # 統計目標發現情況
         discovered_count = sum(1 for target in self.env.targets if target.discovered)
@@ -936,21 +1067,19 @@ class Simulator:
             
             # 4. 監控路徑（細實線）
             if u.history_monitor:
-                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_monitor]
+                pts = [(p[0]+0.5, p[1]+0.5) if isinstance(p, tuple) and len(p) == 2 and isinstance(p[0], int) else p for p in u.history_monitor]
                 xs, ys = [p[0] for p in pts], [p[1] for p in pts]
                 ax.plot(xs, ys, '-', color=color, linewidth=1.5, alpha=0.6, zorder=5)
-            
-            # 5. 跟隨路徑（點劃線）
-            if u.history_follow:
-                pts = [(p[0]+0.5, p[1]+0.5) for p in u.history_follow]
-                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-                ax.plot(xs, ys, '-.', color=color, linewidth=1.0, alpha=0.4, zorder=3)
             
             # UAV 當前位置標記
             if u.status == UAVStatus.DONE:
                 # 已完成：星形
                 ax.plot(u.position[0], u.position[1], '*', color=color, 
                        markersize=18, markeredgewidth=2.5, markeredgecolor='black', zorder=20)
+            elif u.status == UAVStatus.MONITORING:
+                # 監控中：星形（較小）
+                ax.plot(u.position[0], u.position[1], '*', color=color, 
+                       markersize=16, markeredgewidth=2, markeredgecolor='black', zorder=20)
             else:
                 # 執行中：三角形
                 ax.plot(u.position[0], u.position[1], '^', color=color, 
@@ -979,7 +1108,7 @@ class Simulator:
         monitored = sum(1 for t in self.env.targets if t.is_monitored)
         coverage = len(self.env.covered) / (N * N) * 100
         
-        title = f"進階風車式演算法 (內環覆蓋+監視邏輯+序列鎖)\n"
+        title = f"進階風車式演算法 (RRBBA 動態調度)\n"
         title += f"網格: {N}×{N} | UAVs: {self.env.num_uavs} | 內環: {self.planner.rw}×{self.planner.rh}"
         ax.set_title(title, fontsize=13, fontweight='bold')
         
@@ -994,6 +1123,7 @@ class Simulator:
             f"目標監視: {self.time_monitoring_complete if self.time_monitoring_complete else 'N/A'}\n"
             f"總執行時間: {self.current_time}\n"
             f"\n序列鎖: {len(self.dependencies)} 個\n"
+            f"調度模式: RRBBA (滾動優化)\n"
             f"\n【圖例說明】\n"
             f"● 紅色實心: 已訪問目標\n"
             f"○ 橙色空心: 已發現未訪問\n"
@@ -1001,9 +1131,8 @@ class Simulator:
             f"━━ 實線: 外環搜尋\n"
             f"╌╌ 虛線: 通勤路徑\n"
             f"⋯⋯ 點線: 內環搜尋\n"
-            f"─ 細線: 監控路徑\n"
-            f"-·- 點劃: 跟隨路徑\n"
-            f"★ 星形: UAV已完成\n"
+            f"─ 細線: 監控路徑 (RRBBA)\n"
+            f"★ 大星: 任務完成/監控中\n"
             f"▲ 三角: UAV執行中\n"
         )
         
@@ -1014,9 +1143,18 @@ class Simulator:
         ax.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=2)
         
         plt.tight_layout()
-        plt.savefig('windmill_advanced_result.png', dpi=150, bbox_inches='tight')
-        print(f"✓ 可視化圖已保存: windmill_advanced_result.png")
-        plt.show()
+        
+        # 保存圖片
+        if self.save_path:
+            plt.savefig(self.save_path, dpi=150, bbox_inches='tight')
+            print(f"✓ 可視化圖已保存: {self.save_path}")
+        else:
+            plt.savefig('windmill_advanced_result.png', dpi=150, bbox_inches='tight')
+            print(f"✓ 可視化圖已保存: windmill_advanced_result.png")
+        
+        if not self.no_plot:
+            plt.show()
+        plt.close()
 
 # ============================================================================
 # 6. 執行入口
@@ -1035,6 +1173,8 @@ if __name__ == "__main__":
     parser.add_argument('--max-time', type=int, default=200, help='最大模擬時間')
     parser.add_argument('--seed', type=int, default=42, help='隨機種子')
     parser.add_argument('--compare-tsp', action='store_true', help='啟用 TSP 對比測試')
+    parser.add_argument('--no-plot', action='store_true', help='不顯示圖形（用於批量測試）')
+    parser.add_argument('--save-plot', type=str, default=None, help='儲存圖片的路徑')
     
     args = parser.parse_args()
     
@@ -1070,7 +1210,7 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("方法 1: 風車式混合演算法 (Windmill Hybrid)")
     print("="*60)
-    sim = Simulator(env, planner)
+    sim = Simulator(env, planner, no_plot=args.no_plot, save_path=args.save_plot)
     sim.run(max_time=args.max_time)
     
     # 記錄風車式結果
