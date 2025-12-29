@@ -199,15 +199,43 @@ for uav_count in UAV_COUNTS:
             # 解析 TSP 輸出 (合併 stdout 和 stderr)
             output_tsp = (result_tsp.stdout or "") + "\n" + (result_tsp.stderr or "")
             
-            for line in output_tsp.split('\n'):
-                if "TSP Makespan:" in line or "makespan" in line.lower():
-                    match = re.search(r'(\d+\.?\d*)', line)
-                    if match:
-                        tsp_data['makespan'] = float(match.group(1))
-                if "Total Distance:" in line or "總距離" in line:
-                    match = re.search(r'(\d+\.?\d*)', line)
-                    if match:
-                        tsp_data['total_distance'] = float(match.group(1))
+            # 尋找對比結果表格
+            lines = output_tsp.split('\n')
+            in_comparison_section = False
+            
+            for line in lines:
+                # 檢測對比結果區段
+                if "對比結果" in line:
+                    in_comparison_section = True
+                    continue
+                
+                # 跳過分隔線和表頭
+                if not in_comparison_section or line.startswith('=') or line.startswith('-') or '指標' in line:
+                    continue
+                
+                # 在對比區段中，解析包含數字的行
+                if in_comparison_section and '|' in line:
+                    parts = [p.strip() for p in line.split('|')]
+                    
+                    # 至少要有 4 個欄位：指標名 | 風車式值 | TSP值 | 差異
+                    if len(parts) >= 4:
+                        try:
+                            # TSP 的數據在第三列 (index 2)
+                            tsp_val = parts[2]
+                            float_val = float(tsp_val)
+                            
+                            # 根據指標名稱確定是 makespan 還是 distance
+                            metric_name = parts[0].strip()
+                            if '監控完成時間' in metric_name or 'Makespan' in metric_name:
+                                tsp_data['makespan'] = float_val
+                            elif '總飛行距離' in metric_name or 'Distance' in metric_name or '距離' in metric_name:
+                                tsp_data['total_distance'] = float_val
+                            
+                            # 如果兩個都有了就退出
+                            if tsp_data['makespan'] is not None and tsp_data['total_distance'] is not None:
+                                break
+                        except (ValueError, IndexError):
+                            pass
             
             tsp_data['status'] = 'success'
             print(f"[OK] TSP 完成: Makespan={tsp_data['makespan']}")

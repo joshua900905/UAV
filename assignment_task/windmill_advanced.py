@@ -651,10 +651,6 @@ class Environment:
             )
             self.targets.append(target)
         
-        # 調試輸出
-        print(f"\n[目標物生成]")
-        for t in self.targets[:3]:  # 只顯示前3個
-            print(f"  T{t.id}: pos={t.pos}")
     
     def discover_targets(self, pos):
         """

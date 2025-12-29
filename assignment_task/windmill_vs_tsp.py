@@ -244,6 +244,10 @@ class SimpleTSPSimulator:
                 uav.search_start_time = None
             if not hasattr(uav, 'travel_start_time'):
                 uav.travel_start_time = None
+            if not hasattr(uav, 'early_terminated'):
+                uav.early_terminated = False
+            if not hasattr(uav, 'remaining_path'):
+                uav.remaining_path = []
             uav.speed = 1.0
         
         print("\n=== TSP 模擬開始（逐步執行） ===")
@@ -261,12 +265,20 @@ class SimpleTSPSimulator:
             
             self.simulate_step(dt)
             
-            # 當所有 UAV 完成搜尋且所有目標被發現後，統一分配目標
-            all_search_complete = all(uav.search_complete for uav in self.env.uavs)
+            # 【提前終止策略】當所有目標被發現後，立即終止所有 UAV 的搜尋
             all_targets_found = all(t.discovered for t in self.env.targets)
-            
-            if not targets_assigned and all_targets_found and all_search_complete:
-                print(f"\n  ✓ 所有目標已發現且所有UAV完成搜尋（t={self.current_time:.1f}s），開始使用匈牙利算法分配任務...")
+            if not targets_assigned and all_targets_found:
+                # 強制所有仍在搜尋的 UAV 立即完成搜尋
+                for uav in self.env.uavs:
+                    if not uav.search_complete:
+                        # 記錄未走完的路徑
+                        if hasattr(uav, 'path') and hasattr(uav, 'path_index'):
+                            uav.remaining_path = uav.path[uav.path_index:]
+                            uav.early_terminated = True
+                        uav.search_complete = True
+                        print(f"    [提前終止] UAV {uav.id} 在 t={self.current_time:.1f}s 提前終止搜尋（所有目標已發現，剩餘 {len(uav.remaining_path)} 個格點）")
+                
+                print(f"\n  ✓ 所有目標已發現（t={self.current_time:.1f}s），開始使用匈牙利算法分配任務...")
                 self.assign_targets_hungarian()
                 targets_assigned = True
             
@@ -289,7 +301,7 @@ class SimpleTSPSimulator:
             
             old_position = uav.position
             
-            # 階段1：執行搜尋路徑
+            # 階段1：執行搜尋路徑（如果搜尋未完成）
             if not uav.search_complete and uav.path:
                 if uav.search_start_time is None:
                     uav.search_start_time = self.env.current_time
@@ -326,6 +338,11 @@ class SimpleTSPSimulator:
                     # 完成搜尋路徑
                     uav.search_complete = True
                     print(f"    [搜尋完成] UAV {uav.id} 在 t={self.env.current_time:.1f}s 完成搜尋路徑")
+            
+            # 階段1.5：等待目標分配（搜尋完成但尚未分配目標）
+            elif uav.search_complete and not uav.assigned_targets:
+                # UAV 停在當前位置等待目標分配
+                pass
             
             # 階段2：前往已分配的目標
             elif uav.search_complete and uav.assigned_targets:
@@ -736,9 +753,27 @@ def _plot_tsp_result(ax, sim, title, N):
             search_path = [(p[0] + 0.5, p[1] + 0.5) for p in uav.path]
             xs_s, ys_s = zip(*search_path)
             
-            # --- 繪製外圈：搜尋路徑 (實線) ---
-            ax.plot(xs_s, ys_s, '-', color=color, linewidth=2.5, alpha=0.9, 
-                   label=f'UAV {uav.id} 外圈', zorder=4)
+            # --- 繪製已走完的搜尋路徑 (實線) ---
+            if hasattr(uav, 'early_terminated') and uav.early_terminated and hasattr(uav, 'remaining_path'):
+                # 提前終止：只畫已走完的部分
+                completed_count = len(uav.path) - len(uav.remaining_path)
+                if completed_count > 0:
+                    xs_completed = xs_s[:completed_count]
+                    ys_completed = ys_s[:completed_count]
+                    ax.plot(xs_completed, ys_completed, '-', color=color, linewidth=2.5, alpha=0.9, 
+                           label=f'UAV {uav.id} 外圈', zorder=4)
+                    
+                    # 繪製未走完的路徑 (虛線)
+                    if len(uav.remaining_path) > 0:
+                        remaining_coords = [(p[0] + 0.5, p[1] + 0.5) for p in uav.remaining_path]
+                        xs_remaining = [xs_completed[-1]] + [p[0] for p in remaining_coords]
+                        ys_remaining = [ys_completed[-1]] + [p[1] for p in remaining_coords]
+                        ax.plot(xs_remaining, ys_remaining, '--', color=color, linewidth=1.5, alpha=0.4, 
+                               label=f'UAV {uav.id} 未完成', zorder=3)
+            else:
+                # 正常完成：畫完整路徑
+                ax.plot(xs_s, ys_s, '-', color=color, linewidth=2.5, alpha=0.9, 
+                       label=f'UAV {uav.id} 外圈', zorder=4)
             
             # --- 繪製內圈：通勤路徑 (虛線) ---
             # 從 GCS 到搜尋起點
@@ -798,6 +833,9 @@ def _plot_tsp_result(ax, sim, title, N):
     discovered_count = sum(1 for t in sim.env.targets if t.discovered)
     visited_count = sum(1 for t in sim.env.targets if hasattr(t, 'visited_by') and t.visited_by is not None)
     
+    # 檢查是否有提前終止
+    early_terminated_count = sum(1 for uav in sim.env.uavs if hasattr(uav, 'early_terminated') and uav.early_terminated)
+    
     info_text = (
         f"覆蓋率: {metrics['coverage_rate']:.1f}%\n"
         f"目標發現: {discovered_count}/{len(sim.env.targets)}\n"
@@ -807,12 +845,24 @@ def _plot_tsp_result(ax, sim, title, N):
         f"平均距離: {metrics['avg_total_distance']:.1f}\n"
         f"利用率: {metrics['uav_utilization']:.1f}%\n"
         f"平衡指數: {metrics['load_balance_index']:.3f}\n"
+    )
+    
+    if early_terminated_count > 0:
+        info_text += f"\n【提前終止】\n{early_terminated_count} 台 UAV 提前終止搜尋\n"
+    
+    info_text += (
         f"\n【圖例說明】\n"
         f"● 紅色實心: 已訪問目標\n"
         f"○ 橙色空心: 已發現未訪問\n"
         f"✕ 灰色叉: 未發現目標\n"
-        f"━━ 實線: 搜尋路徑 (外圈)\n"
-        f"⋯⋯ 虛線: 通勤路徑 (內圈)\n"
+        f"━━ 實線: 已完成搜尋路徑\n"
+    )
+    
+    if early_terminated_count > 0:
+        info_text += f"- - 虛線: 未完成路徑（提前終止）\n"
+    
+    info_text += (
+        f"⋯⋯ 點線: 通勤路徑\n"
         f"★ 星形: UAV當前位置"
     )
     ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=8, 
@@ -901,7 +951,8 @@ if __name__ == "__main__":
     sim1 = Simulator(env1, planner1, no_plot=True)  # Always disable plot in comparison mode
     sim1.run(max_time=args.max_time)
     
-    windmill_makespan = sim1.current_time
+    # 風車式使用監控完成時間
+    windmill_monitoring_complete = sim1.time_monitoring_complete if hasattr(sim1, 'time_monitoring_complete') and sim1.time_monitoring_complete else sim1.current_time
     windmill_total_dist = sum(u.total_distance for u in env1.uavs)
     
     # ========== 方法 2: 2-Opt TSP ==========
@@ -935,7 +986,7 @@ if __name__ == "__main__":
     print("="*60)
     print(f"{'指標':<25} | {'風車式':<15} | {'TSP':<15} | {'差異':<15}")
     print("-" * 80)
-    print(f"{'完成時間 (Makespan)':<25} | {windmill_makespan:<15.2f} | {tsp_makespan:<15.2f} | {windmill_makespan - tsp_makespan:+.2f}")
+    print(f"{'監控完成時間':<25} | {windmill_monitoring_complete:<15.2f} | {tsp_makespan:<15.2f} | {windmill_monitoring_complete - tsp_makespan:+.2f}")
     print(f"{'總飛行距離':<25} | {windmill_total_dist:<15.2f} | {tsp_total_dist:<15.2f} | {windmill_total_dist - tsp_total_dist:+.2f}")
     print(f"{'發現目標數':<25} | {len([t for t in env1.targets if t.discovered]):<15} | {len([t for t in env2.targets if t.discovered]):<15} | -")
     print(f"{'監控目標數':<25} | {len([t for t in env1.targets if t.is_monitored]):<15} | {len([t for t in env2.targets if t.is_monitored]):<15} | -")
